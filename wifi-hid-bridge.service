@@ -1,0 +1,15 @@
+[Unit]
+Description=Wi-Fi HID Bridge Web UI (DuckyScript executor)
+Documentation=https://github.com/ipusiron/book_AirGapInput
+After=hid-gadget.service network.target
+Requires=hid-gadget.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/wifi-hid-bridge/wifi_hid_bridge.py
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

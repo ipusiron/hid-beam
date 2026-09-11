@@ -1,0 +1,13 @@
+[Unit]
+Description=Wi-Fi HID Bridge USB Gadget Setup
+Documentation=man:configfs(5)
+After=sysinit.target local-fs.target
+Before=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup-hid-gadget.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
