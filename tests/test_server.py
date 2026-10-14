@@ -42,6 +42,9 @@ class ServerTestBase(unittest.TestCase):
         srv.app.config["TESTING"] = True
         srv.app.secret_key = "test-secret"
         srv.ACCESS_TOKEN = "testtoken"
+        # 既定はフェイルクローズだが、test_client は Origin を付けないため
+        # 大半のテストでは緩める（Origin検証は TestOriginGate で明示的に検証する）。
+        srv.REQUIRE_ORIGIN = False
         # 共有状態をリセット
         srv._exec_times.clear()
         srv._auth_fail_times.clear()
@@ -212,6 +215,45 @@ class TestRateLimit(ServerTestBase):
         nonce = _nonce_from(pv.get_data(as_text=True))
         r = self.client.post("/execute", data={"nonce": nonce})
         self.assertIn("多すぎ", r.get_data(as_text=True))
+
+
+class TestOriginGate(ServerTestBase):
+    def setUp(self):
+        super().setUp()
+        srv.REQUIRE_ORIGIN = True  # フェイルクローズを明示的に検証する
+
+    def test_no_origin_rejected_when_required(self):
+        self._login()
+        r = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_bad_origin_rejected(self):
+        self._login()
+        r = self.client.post("/preview", data={"script": "STRING a", "layout": "us"},
+                             headers={"Origin": "http://evil.example"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_good_origin_ok(self):
+        self._login()
+        r = self.client.post("/preview", data={"script": "STRING a", "layout": "us"},
+                             headers={"Origin": "http://localhost"})
+        self.assertEqual(r.status_code, 200)
+
+
+class TestPayloadAndHeaders(ServerTestBase):
+    def test_413_on_oversized_body(self):
+        self._login()
+        big = "A" * (srv.MAX_CONTENT_BYTES + 100)
+        r = self.client.post("/preview", data={"script": big, "layout": "us"})
+        self.assertEqual(r.status_code, 413)
+
+    def test_security_headers_present(self):
+        r = self.client.get("/")
+        csp = r.headers.get("Content-Security-Policy", "")
+        self.assertIn("default-src 'none'", csp)   # JS無し: scriptはdefault-srcで封じる
+        self.assertIn("form-action 'self'", csp)
+        self.assertEqual(r.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(r.headers.get("X-Content-Type-Options"), "nosniff")
 
 
 if __name__ == "__main__":

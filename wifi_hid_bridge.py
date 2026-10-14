@@ -61,6 +61,9 @@ _default_hosts = f"{LISTEN_HOST}:{LISTEN_PORT},{LISTEN_HOST}"
 ALLOWED_HOSTS = {h.strip() for h in _env("HIDBEAM_ALLOWED_HOSTS", _default_hosts).split(",") if h.strip()}
 # 実行時の武装を必須とするか（既定: 必須）。
 REQUIRE_ARM = _env("HIDBEAM_REQUIRE_ARM", "1") != "0"
+# 状態変更POSTでOrigin/Refererが無い場合に拒否するか（既定: 拒否＝フェイルクローズ）。
+# curl等での検証時のみ HIDBEAM_REQUIRE_ORIGIN=0 で緩められる。
+REQUIRE_ORIGIN = _env("HIDBEAM_REQUIRE_ORIGIN", "1") != "0"
 # per-bootの状態を置くディレクトリ（Piでは tmpfs の /run を想定）。
 RUN_DIR = _env("HIDBEAM_RUN_DIR", "/run/wifi-hid-bridge")
 TOKEN_FILE = os.path.join(RUN_DIR, "token")
@@ -146,15 +149,15 @@ def _host_ok():
 
 
 def _origin_ok():
-    """状態変更リクエストのCSRF対策。Originがあれば許可ホストと一致必須。"""
+    """状態変更リクエストのCSRF対策。Originがあれば許可ホストと一致必須。
+    Origin も Referer も無い場合は、既定でフェイルクローズ（REQUIRE_ORIGIN）。"""
     origin = request.headers.get("Origin")
-    if origin is None:
-        # Originを送らない古いUAもある。Refererで代替確認する。
-        ref = request.headers.get("Referer", "")
-        if not ref:
-            return True  # UI内フォーム以外からは後段のトークンでも防ぐ
+    if origin is not None:
+        return any(origin == f"http://{h}" for h in ALLOWED_HOSTS)
+    ref = request.headers.get("Referer", "")
+    if ref:
         return any(ref.startswith(f"http://{h}/") or ref == f"http://{h}" for h in ALLOWED_HOSTS)
-    return any(origin == f"http://{h}" for h in ALLOWED_HOSTS)
+    return not REQUIRE_ORIGIN
 
 
 # ---------- レート制限 / ロックアウト ----------
@@ -515,6 +518,26 @@ def _guard_host():
     # GET含め、許可ホスト以外は拒否（DNSリバインディング対策）
     if not _host_ok():
         abort(400, STRINGS[_lang()]["bad_host"])
+
+
+@app.after_request
+def _security_headers(resp):
+    # このページはJavaScriptを一切使わない。script-src は default-src 'none' で封じ、
+    # インラインCSSのみ style-src で許可する。フォーム送信は自オリジンのみ。
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
+
+
+@app.errorhandler(413)
+def _too_large(e):
+    # 本文がMAX_CONTENT_LENGTHを超えた場合（日英併記の簡易応答）
+    return "入力が大きすぎます / Request entity too large\n", 413
 
 
 @app.route("/", methods=["GET"])
