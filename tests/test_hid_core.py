@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hid_core
 from hid_core import (
-    compile_script, DuckyCompileError, Limits, KeyEvent, DelayEvent,
-    char_to_keycode, CHAR_DELAY_MS,
+    compile_script, compile_payload, syllable_fingerprint, DuckyCompileError,
+    Limits, KeyEvent, DelayEvent, char_to_keycode, CHAR_DELAY_MS, _FP_WORDS,
 )
 
 
@@ -222,6 +222,71 @@ class TestDetailRows(unittest.TestCase):
         rows, omitted = c.detail_rows(limit=4)
         self.assertEqual(len(rows), 4)
         self.assertEqual(omitted, 6)
+
+
+class TestFingerprint(unittest.TestCase):
+    def test_deterministic(self):
+        self.assertEqual(syllable_fingerprint("hello"), syllable_fingerprint("hello"))
+
+    def test_structure(self):
+        fp = syllable_fingerprint("payload")
+        self.assertEqual(len(fp["sha256"]), 64)
+        self.assertEqual(fp["short"], fp["sha256"][:8])
+        toks = fp["words"].split("-")
+        self.assertEqual(len(toks), 4)
+        for w in toks:
+            self.assertIn(w, _FP_WORDS)
+
+    def test_known_vector_empty(self):
+        fp = syllable_fingerprint("")
+        self.assertEqual(fp["short"], "e3b0c442")
+        self.assertEqual(fp["words"], "lion-mint-arch-aura")
+
+    def test_different_text_differs(self):
+        self.assertNotEqual(syllable_fingerprint("a")["words"],
+                            syllable_fingerprint("b")["words"])
+
+    def test_no_offensive_tokens(self):
+        # 語彙に不快語が無いことを明示的に固定する
+        for bad in ("fag", "nig", "ass", "cum", "jew"):
+            self.assertNotIn(bad, _FP_WORDS)
+
+
+class TestCompilePayload(unittest.TestCase):
+    def test_literal_chars(self):
+        c = compile_payload("abc", "us")
+        self.assertTrue(c.is_payload)
+        self.assertEqual(c.key_event_count, 3)
+        self.assertIsNotNone(c.fingerprint)
+
+    def test_no_command_parsing(self):
+        # "STRING x" はコマンドではなく 8 文字として逐語入力される
+        c = compile_payload("STRING x", "us")
+        self.assertEqual(c.key_event_count, 8)
+
+    def test_newline_becomes_enter(self):
+        c = compile_payload("a\nb", "us")
+        self.assertEqual(c.key_event_count, 3)
+        self.assertEqual(c.steps[1].keycode, 0x28)  # ENTER
+
+    def test_crlf_normalized(self):
+        a = compile_payload("a\r\nb", "us")
+        b = compile_payload("a\nb", "us")
+        self.assertEqual(a.key_event_count, b.key_event_count)
+        self.assertEqual(a.fingerprint, b.fingerprint)
+
+    def test_fingerprint_is_of_normalized_text(self):
+        c = compile_payload("x\r\ny", "us")
+        self.assertEqual(c.fingerprint, syllable_fingerprint("x\ny"))
+
+    def test_unsupported_char_rejected_atomically(self):
+        with self.assertRaises(DuckyCompileError) as ctx:
+            compile_payload("abcあ", "us")
+        self.assertTrue(any("入力できない" in e for e in ctx.exception.errors))
+
+    def test_input_too_large(self):
+        with self.assertRaises(DuckyCompileError):
+            compile_payload("abcd", "us", Limits(max_input_bytes=2))
 
 
 if __name__ == "__main__":

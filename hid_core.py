@@ -14,6 +14,7 @@ DuckyCompileError を送出する。
 本モジュールは打鍵を生成するだけで、実際のHID書き込みは呼び出し側が行う。
 """
 
+import hashlib
 from dataclasses import dataclass, field
 
 
@@ -149,6 +150,47 @@ def _mod_label(modifier):
     return "+".join(name for bit, name in MOD_LABELS if modifier & bit)
 
 
+# ---------- 完全性フィンガープリント ----------
+# 一方向のキーストローク注入は、レイアウト不一致・取りこぼし・対向側の補完で
+# 黙ってデータが壊れる。投入したデータが意図どおりかを運用者が検証できるよう、
+# データの SHA-256 と、人間が読み上げて突き合わせやすい音節トークンを計算する。
+
+# 6ビット＝1語の厳選語彙（64語）。短く・相互に紛れにくく・不快語を含まない。
+# 音節の機械生成だと差別語などを生み得るため、固定リストにしてある。
+_FP_WORDS = [
+    "able", "acid", "aqua", "arch", "aura", "bake", "bard", "bean",
+    "bell", "bird", "blue", "bolt", "bone", "calm", "cave", "cell",
+    "clay", "coal", "cold", "cork", "cove", "crop", "dawn", "deck",
+    "dice", "disk", "dome", "dust", "echo", "edge", "fern", "film",
+    "fire", "fish", "flag", "foam", "fork", "fuel", "gate", "gear",
+    "gift", "gold", "gull", "hall", "harp", "hawk", "herb", "hill",
+    "iron", "jade", "kelp", "kite", "lake", "lamp", "leaf", "lime",
+    "lion", "loom", "maze", "mint", "mist", "moon", "moss", "nest",
+]
+assert len(_FP_WORDS) == 64
+
+
+def syllable_fingerprint(text):
+    """テキスト(UTF-8)の SHA-256 と、先頭バイト由来の語フィンガープリントを返す。
+
+    返り値: {"sha256": 64桁hex, "short": 先頭8桁, "words": "gold-fern-lake-mint"}
+    SHA-256 先頭3バイト(24ビット)を6ビットずつ4語に符号化する（各語は64語彙の1つ）。
+    hex より読み上げ・聞き取りで取り違えにくい。投入後に対向機で同じ値を出して
+    突き合わせれば、データが壊れずに入ったかを人が検証できる。
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    b0, b1, b2 = digest[0], digest[1], digest[2]
+    idx = [
+        b0 >> 2,
+        ((b0 & 0x03) << 4) | (b1 >> 4),
+        ((b1 & 0x0F) << 2) | (b2 >> 6),
+        b2 & 0x3F,
+    ]
+    hexd = digest.hex()
+    return {"sha256": hexd, "short": hexd[:8],
+            "words": "-".join(_FP_WORDS[i] for i in idx)}
+
+
 # ---------- 例外 ----------
 
 class DuckyCompileError(Exception):
@@ -185,6 +227,8 @@ class CompiledScript:
     combos: list = field(default_factory=list)    # 使用された修飾キー組合せ
     specials: list = field(default_factory=list)  # 使用された特殊キー
     uses_gui_modifier: bool = False
+    fingerprint: dict = None      # データ投入モードの完全性フィンガープリント
+    is_payload: bool = False      # 生データ逐語投入か（DuckyScriptでない）
 
     def plan_summary(self):
         """プレビュー表示用の要約（実送信しない）。"""
@@ -197,6 +241,8 @@ class CompiledScript:
             "combos": list(self.combos),
             "specials": list(self.specials),
             "uses_gui_modifier": self.uses_gui_modifier,
+            "fingerprint": self.fingerprint,
+            "is_payload": self.is_payload,
         }
 
     def detail_rows(self, limit=100):
@@ -423,4 +469,71 @@ def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
         combos=combos,
         specials=specials,
         uses_gui_modifier=uses_gui,
+    )
+
+
+def compile_payload(text, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
+    """生データを逐語入力する「データ投入モード」の検証・計画を作る。
+
+    DuckyScript のコマンド解釈はしない。text の各文字をそのまま打鍵へ変換する
+    （改行→ENTER、タブ→TAB）。未対応文字が1つでもあれば打鍵を生成せず拒否する
+    （壊れたデータを黙って投入しないため）。改行は LF に正規化し、その正規化後の
+    テキストに対して完全性フィンガープリントを付す。
+    """
+    if layout not in LAYOUTS:
+        raise DuckyCompileError([f"未知のレイアウト: {layout!r}"])
+
+    # 改行を LF に正規化（\r はキーに無い。投入される実体＝LF に揃える）
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    errors = []
+    raw = text.encode("utf-8", errors="replace")
+    if len(raw) > limits.max_input_bytes:
+        raise DuckyCompileError([
+            f"入力が大きすぎます: {len(raw)} bytes (上限 {limits.max_input_bytes})"
+        ])
+
+    steps = []
+    key_event_count = 0
+    unsupported = []
+    seen = set()
+    for ch in text:
+        kc, mod = char_to_keycode(ch, layout)
+        if kc is None:
+            if ch not in seen:
+                seen.add(ch)
+                unsupported.append(ch)
+            continue
+        steps.append(KeyEvent(kc, mod, ch))
+        key_event_count += 1
+
+    if unsupported:
+        shown = ", ".join(repr(c) for c in unsupported)
+        errors.append(f"このレイアウトで入力できない文字があります: {shown}")
+    if key_event_count > limits.max_key_events:
+        errors.append(
+            f"打鍵イベントが多すぎます: {key_event_count} (上限 {limits.max_key_events})"
+        )
+    estimated_duration_ms = key_event_count * CHAR_DELAY_MS
+    if estimated_duration_ms > limits.max_total_duration_ms:
+        errors.append(
+            f"推定総所要時間が上限を超えました: {estimated_duration_ms}ms "
+            f"(上限 {limits.max_total_duration_ms}ms)"
+        )
+    if errors:
+        raise DuckyCompileError(errors)
+
+    line_count = (text.count("\n") + 1) if text else 0
+    return CompiledScript(
+        layout=layout,
+        steps=steps,
+        key_event_count=key_event_count,
+        delay_total_ms=0,
+        estimated_duration_ms=estimated_duration_ms,
+        command_count=line_count,
+        combos=[],
+        specials=[],
+        uses_gui_modifier=False,
+        fingerprint=syllable_fingerprint(text),
+        is_payload=True,
     )

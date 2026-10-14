@@ -21,10 +21,13 @@ This tool is the independent, continuously improved version of the software expl
 
 ## ✨ What's different
 
-Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), this tool is designed around the following principles.
+Most existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., Rubber Ducky, …) are attack-oriented and "fire and forget." This tool is the opposite: its focus is getting **data into** an isolated environment correctly and verifiably.
 
+- **Verified data entry (a feature the others lack)**: it shows the SHA-256 of the payload plus a human-comparable word fingerprint (e.g. `gold-fern-lake-mint`). One-way keystroke injection can be silently corrupted by layout mismatch or dropped keys; by computing the same value on the target afterwards, the operator can verify the data arrived intact. Attack-oriented HID tools have no such check.
+- **Preview and atomic execution**: the whole script is validated before sending, each keystroke's HID Usage ID is shown, and it is sent in a two-step "preview → confirm." Partial sends (typing halfway, then failing) cannot happen.
+- **Disarmed-by-default safety**: nothing is sent unless armed locally; privilege separation, token auth and AP-only binding back it up.
+- **Auditable by minimal implementation**: the parse/validation core is compact and meant to be read end to end — important for defensive use.
 - **Remote HID keyboard over Wi-Fi**: type into an isolated machine from a browser without physically re-plugging a keyboard.
-- **Auditable by minimal implementation**: the Ducky Script interpreter core is small enough to read end to end — important for defensive use.
 - **No third-party host dependency**: the source lives in the book and this repository, unaffected by any external service shutting down.
 
 ---
@@ -33,6 +36,7 @@ Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), thi
 
 - **Ducky Script 1.0 subset interpreter**: `STRING` / `ENTER` / `TAB` / `DELAY` / `GUI`/`CTRL`/`ALT`/`SHIFT` modifier combos / `REM`.
 - **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. It also lists each keystroke's HID Usage ID and modifier, so you can see exactly what will be typed before sending. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
+- **Verified data-entry mode**: a mode that types raw data verbatim instead of DuckyScript. It shows an integrity fingerprint (SHA-256 + word tokens) of the payload so you can cross-check it on the target afterwards. For reliably getting config files, keys or base64 blobs into an isolated machine.
 - **Token authentication**: only someone who knows the per-boot token can operate it. Joining the AP is not enough to send.
 - **Disarmed by default**: sending is disabled by default. It is enabled only for a short window when you run `hidbeam_arm.py` on the Pi; it auto-disarms when the window expires.
 - **Physical arm/abort buttons (optional)**: with `hidbeam_gpio.py`, a GPIO button arms the device and another button aborts immediately (requires wiring).
