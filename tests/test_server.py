@@ -191,6 +191,13 @@ class TestExecuteSendsBytes(ServerTestBase):
         self.client.post("/execute", data={"nonce": nonce})
         self.assertEqual(len(fake.writes), 0)  # 武装していないので1バイトも出ない
 
+    def test_preview_shows_usage_id_detail(self):
+        self._login()
+        pv = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
+        html = pv.get_data(as_text=True)
+        self.assertIn("Usage ID", html)
+        self.assertIn("0x04", html)  # 'a' の HID Usage ID
+
     def test_invalid_script_preview_rejected_no_nonce(self):
         self._login()
         pv = self.client.post("/preview", data={"script": "STRING aあb", "layout": "us"})
