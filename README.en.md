@@ -24,6 +24,7 @@ This tool is the independent, continuously improved version of the software expl
 Most existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., Rubber Ducky, …) are attack-oriented and "fire and forget." This tool is the opposite: its focus is getting **data into** an isolated environment correctly and verifiably.
 
 - **Verified data entry (a feature the others lack)**: it shows the SHA-256 of the payload plus a human-comparable word fingerprint (e.g. `gold-fern-lake-mint`). One-way keystroke injection can be silently corrupted by layout mismatch or dropped keys; by computing the same value on the target afterwards, the operator can verify the data arrived intact. Attack-oriented HID tools have no such check.
+- **File inject and layout test**: inject a small file as base64 with on-target self-verification (`sha256sum`), and diagnose layout match before the real payload. Both are about getting data in *correctly* — absent from attack-oriented tools.
 - **Preview and atomic execution**: the whole script is validated before sending, each keystroke's HID Usage ID is shown, and it is sent in a two-step "preview → confirm." Partial sends (typing halfway, then failing) cannot happen.
 - **Disarmed-by-default safety**: nothing is sent unless armed locally; privilege separation, token auth and AP-only binding back it up.
 - **Auditable by minimal implementation**: the parse/validation core is compact and meant to be read end to end — important for defensive use.
@@ -37,6 +38,8 @@ Most existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., Rubber Ducky, …) 
 - **Ducky Script 1.0 subset interpreter**: `STRING` / `ENTER` / `TAB` / `DELAY` / `GUI`/`CTRL`/`ALT`/`SHIFT` modifier combos / `REM`.
 - **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. It also lists each keystroke's HID Usage ID and modifier, so you can see exactly what will be typed before sending. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
 - **Verified data-entry mode**: a mode that types raw data verbatim instead of DuckyScript. It shows an integrity fingerprint (SHA-256 + word tokens) of the payload so you can cross-check it on the target afterwards. For reliably getting config files, keys or base64 blobs into an isolated machine.
+- **File inject mode**: base64-encodes a small file and types a script that restores it on the target with `base64 -d` and verifies with a trailing `sha256sum`. Gets config files or keys into an isolated machine that has no USB storage.
+- **Layout test**: types a string of symbols that sit on different keys under US vs JIS, so you can confirm the target shows the reference before sending real data — heading off the most common keystroke-injection failure.
 - **Token authentication**: only someone who knows the per-boot token can operate it. Joining the AP is not enough to send.
 - **Disarmed by default**: sending is disabled by default. It is enabled only for a short window when you run `hidbeam_arm.py` on the Pi; it auto-disarms when the window expires.
 - **Physical arm/abort buttons (optional)**: with `hidbeam_gpio.py`, a GPIO button arms the device and another button aborts immediately (requires wiring).
@@ -68,7 +71,7 @@ Most existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., Rubber Ducky, …) 
 | `dhcpcd-ap.conf` | static IP for wlan0 (192.168.100.1/24) |
 | `requirements.txt` | Python dependency (Flask) |
 | `tests/` | unit tests for `hid_core`, `hidbeam_arm`, `hidbeam_gpio` and the web gates |
-| `CHECKLIST.md` | on-device (Pi Zero W) verification checklist |
+| `CHECKLIST.md` / `CHECKLIST.en.md` | on-device (Pi Zero W) verification checklist (JA / EN) |
 
 ---
 

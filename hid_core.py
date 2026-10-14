@@ -14,6 +14,8 @@ DuckyCompileError を送出する。
 本モジュールは打鍵を生成するだけで、実際のHID書き込みは呼び出し側が行う。
 """
 
+import re
+import base64
 import hashlib
 from dataclasses import dataclass, field
 
@@ -107,6 +109,11 @@ LAYOUTS = {
     "jis": (KEYMAP_JIS_NOSHIFT, KEYMAP_JIS_SHIFT),
 }
 DEFAULT_LAYOUT = "us"
+
+# レイアウト診断用の文字列。US/JIS で物理キーが異なる記号だけを、両レイアウトの
+# キーマップに共通して存在する範囲で並べてある。これを打って対向機の表示が
+# 参照と一致しなければ、対向機の実レイアウトが選択と食い違っている。
+LAYOUT_DIAG_TEXT = "layout check !\"#$%&'()~+*-_@[]{}|;:,.<>?/"
 
 SPECIAL_KEYS = {
     "ENTER": 0x28, "RETURN": 0x28,
@@ -537,3 +544,47 @@ def compile_payload(text, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
         fingerprint=syllable_fingerprint(text),
         is_payload=True,
     )
+
+
+# ---------- ファイル投入（base64）スクリプト生成 ----------
+
+_SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._/][A-Za-z0-9._/-]*$")
+
+
+def build_file_inject(content, filename, wrap=76):
+    """小さなファイルをキーストロークで投入するシェルスクリプトを生成する。
+
+    USBストレージを使えない隔離環境（Unix系）へ、設定ファイルや鍵を確実に入れる
+    用途。内容を base64 でエンコードし、対向機で `base64 -d` して復元、最後に
+    `sha256sum` で検証する一連のコマンドを文字列として返す。生成した文字列は
+    compile_payload で逐語入力する。
+
+    返り値: {"script": 生成スクリプト, "fingerprint": 元データ(LF正規化後)のfp,
+             "bytes": 元データのバイト数, "b64_lines": base64行数}
+    改行は LF に正規化してからエンコードする。filename は安全な文字（英数字と
+    . _ - /）のみ許可し、シングルクオート脱出やコマンド注入を防ぐ。
+    """
+    if not filename or not _SAFE_FILENAME.match(filename):
+        raise DuckyCompileError([
+            f"ファイル名に使える文字は英数字と . _ - / のみです: {filename!r}"
+        ])
+    if ".." in filename:
+        raise DuckyCompileError(["ファイル名に .. は使えません"])
+
+    norm = content.replace("\r\n", "\n").replace("\r", "\n")
+    raw = norm.encode("utf-8")
+    b64 = base64.b64encode(raw).decode("ascii")
+    lines = [b64[i:i + wrap] for i in range(0, len(b64), wrap)] or [""]
+    eof = "HIDBEAM_B64_EOF"
+    script = (
+        f"base64 -d > '{filename}' <<'{eof}'\n"
+        + "\n".join(lines) + "\n"
+        + f"{eof}\n"
+        + f"sha256sum '{filename}'\n"
+    )
+    return {
+        "script": script,
+        "fingerprint": syllable_fingerprint(norm),
+        "bytes": len(raw),
+        "b64_lines": len(lines),
+    }
