@@ -597,7 +597,7 @@ def compile_payload(text, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._/][A-Za-z0-9._/-]*$")
 
 
-def build_file_inject(content, filename, wrap=76, encoding="base64"):
+def build_file_inject(content, filename, wrap=76, encoding="base64", chunk_lines=0):
     """小さなファイルをキーストロークで投入するシェルスクリプトを生成する。
 
     USBストレージを使えない隔離環境（Unix系）へ、設定ファイルや鍵を確実に入れる
@@ -610,8 +610,16 @@ def build_file_inject(content, filename, wrap=76, encoding="base64"):
       "hex"    → `xxd -r -p` で復元。0-9a-f のみで両レイアウトで打てる。base64 が
                  無い／`=` が打てない対向機向けの代替。
 
+    chunk_lines:
+      0（既定）→ 1つのヒアドキュメントで一括投入。
+      >0        → エンコード済み行を chunk_lines 行ずつのブロックに分け、1つ目は
+                 `>`、以降は `>>` で追記し、各ブロック後に `echo 'hidbeam: chunk k/N'`
+                 で進捗を出す。巨大ファイルを1打鍵の取りこぼしで全損させず、途中で
+                 止まっても対向機の進捗表示で到達点が分かる。ブロック境界は wrap 行
+                 単位なのでエンコードのバイト境界に揃い、追記で正しく連結される。
+
     返り値: {"script", "fingerprint"(元データLF正規化後), "bytes", "lines",
-             "encoding", "decoder"}
+             "chunks", "encoding", "decoder"}
     改行は LF に正規化してからエンコードする。filename は安全な文字（英数字と
     . _ - /）のみ許可し、シングルクオート脱出やコマンド注入を防ぐ。
     """
@@ -631,19 +639,41 @@ def build_file_inject(content, filename, wrap=76, encoding="base64"):
     else:
         raise DuckyCompileError([f"未知のエンコーディング: {encoding!r}（base64 か hex）"])
 
+    # wrap は 4 と 2 の倍数（76）。各 wrap 行はエンコードのバイト境界に揃うため、
+    # 行単位で分割したブロックを `>>` で追記しても復元結果は連結で一致する。
     lines = [enc[i:i + wrap] for i in range(0, len(enc), wrap)] or [""]
-    eof = "HIDBEAM_EOF"
-    script = (
-        f"{decoder} > '{filename}' <<'{eof}'\n"
-        + "\n".join(lines) + "\n"
-        + f"{eof}\n"
-        + f"sha256sum '{filename}'\n"
-    )
+
+    if chunk_lines and chunk_lines > 0:
+        blocks = [lines[i:i + chunk_lines] for i in range(0, len(lines), chunk_lines)]
+        n = len(blocks)
+        parts = []
+        for idx, blk in enumerate(blocks, 1):
+            redir = ">" if idx == 1 else ">>"
+            eofk = f"HIDBEAM_EOF_{idx}"
+            parts.append(
+                f"{decoder} {redir} '{filename}' <<'{eofk}'\n"
+                + "\n".join(blk) + "\n"
+                + f"{eofk}\n"
+                + f"echo 'hidbeam: chunk {idx}/{n}'\n"
+            )
+        script = "".join(parts) + f"sha256sum '{filename}'\n"
+        chunks = n
+    else:
+        eof = "HIDBEAM_EOF"
+        script = (
+            f"{decoder} > '{filename}' <<'{eof}'\n"
+            + "\n".join(lines) + "\n"
+            + f"{eof}\n"
+            + f"sha256sum '{filename}'\n"
+        )
+        chunks = 1
+
     return {
         "script": script,
         "fingerprint": syllable_fingerprint(norm),
         "bytes": len(raw),
         "lines": len(lines),
+        "chunks": chunks,
         "encoding": encoding,
         "decoder": decoder,
     }

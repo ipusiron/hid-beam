@@ -337,6 +337,20 @@ class TestFileInjectMode(ServerTestBase):
         self.assertIn("送信完了", r.get_data(as_text=True))
         self.assertGreater(len(fake.writes), 10)  # 生成スクリプトはそれなりに長い
 
+    def test_file_chunked_mode(self):
+        # 分割は「生成」機能。実送信は他テストで検証済みのため、ここでは生成内容を確認する
+        # （大きなペイロードを実打鍵するとキーごとのsleepで極端に遅くなるため避ける）。
+        self._login()
+        self._arm()
+        pv = self.client.post("/preview", data={
+            "script": "A" * 1200, "layout": "us", "mode": "file",
+            "filename": "big.conf", "chunked": "1"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        self.assertIsNotNone(nonce)
+        stored = srv._nonces[nonce][0]  # 生成された分割スクリプト
+        self.assertIn("hidbeam: chunk 1/", stored)
+        self.assertIn("HIDBEAM_EOF_2", stored)  # 2ブロック以上に分割されている
+
     def test_file_hex_mode_typeable_in_jis(self):
         # hex は 0-9a-f のみ。JIS 選択でもプレビューが通り、ノンスが発行される
         self._login()
