@@ -295,6 +295,34 @@ def char_to_keycode(ch, layout=DEFAULT_LAYOUT):
     return None, 0
 
 
+def _reverse_maps(layout):
+    noshift, shift = LAYOUTS[layout]
+    return ({v: k for k, v in noshift.items()},
+            {v: k for k, v in shift.items()})
+
+
+def predict_display(text, typed_layout, actual_layout):
+    """typed_layout で打鍵した text を、実レイアウトが actual_layout の対向機が
+    どう表示するかを予測して返す。
+
+    レイアウト不一致を「検出」するだけでなく「どちらにずれているか」を運用者が
+    特定できるようにするための関数。打鍵不能な文字や、そのキーに対応表示が無い
+    場合は '?' で表す。
+    """
+    if typed_layout not in LAYOUTS or actual_layout not in LAYOUTS:
+        raise DuckyCompileError(["未知のレイアウト"])
+    noshift_rev, shift_rev = _reverse_maps(actual_layout)
+    out = []
+    for ch in text:
+        kc, mod = char_to_keycode(ch, typed_layout)
+        if kc is None:
+            out.append("?")
+            continue
+        rev = shift_rev if (mod & MOD_LSHIFT) else noshift_rev
+        out.append(rev.get(kc, "?"))
+    return "".join(out)
+
+
 # ---------- スクリプト全体の解析・検証 ----------
 
 def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
@@ -551,16 +579,21 @@ def compile_payload(text, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9._/][A-Za-z0-9._/-]*$")
 
 
-def build_file_inject(content, filename, wrap=76):
+def build_file_inject(content, filename, wrap=76, encoding="base64"):
     """小さなファイルをキーストロークで投入するシェルスクリプトを生成する。
 
     USBストレージを使えない隔離環境（Unix系）へ、設定ファイルや鍵を確実に入れる
-    用途。内容を base64 でエンコードし、対向機で `base64 -d` して復元、最後に
+    用途。内容を base64 または hex でエンコードし、対向機で復元、最後に
     `sha256sum` で検証する一連のコマンドを文字列として返す。生成した文字列は
     compile_payload で逐語入力する。
 
-    返り値: {"script": 生成スクリプト, "fingerprint": 元データ(LF正規化後)のfp,
-             "bytes": 元データのバイト数, "b64_lines": base64行数}
+    encoding:
+      "base64" → `base64 -d` で復元（既定）。`=` を含むため US 配列向き。
+      "hex"    → `xxd -r -p` で復元。0-9a-f のみで両レイアウトで打てる。base64 が
+                 無い／`=` が打てない対向機向けの代替。
+
+    返り値: {"script", "fingerprint"(元データLF正規化後), "bytes", "lines",
+             "encoding", "decoder"}
     改行は LF に正規化してからエンコードする。filename は安全な文字（英数字と
     . _ - /）のみ許可し、シングルクオート脱出やコマンド注入を防ぐ。
     """
@@ -573,11 +606,17 @@ def build_file_inject(content, filename, wrap=76):
 
     norm = content.replace("\r\n", "\n").replace("\r", "\n")
     raw = norm.encode("utf-8")
-    b64 = base64.b64encode(raw).decode("ascii")
-    lines = [b64[i:i + wrap] for i in range(0, len(b64), wrap)] or [""]
-    eof = "HIDBEAM_B64_EOF"
+    if encoding == "base64":
+        enc, decoder = base64.b64encode(raw).decode("ascii"), "base64 -d"
+    elif encoding == "hex":
+        enc, decoder = raw.hex(), "xxd -r -p"
+    else:
+        raise DuckyCompileError([f"未知のエンコーディング: {encoding!r}（base64 か hex）"])
+
+    lines = [enc[i:i + wrap] for i in range(0, len(enc), wrap)] or [""]
+    eof = "HIDBEAM_EOF"
     script = (
-        f"base64 -d > '{filename}' <<'{eof}'\n"
+        f"{decoder} > '{filename}' <<'{eof}'\n"
         + "\n".join(lines) + "\n"
         + f"{eof}\n"
         + f"sha256sum '{filename}'\n"
@@ -586,5 +625,7 @@ def build_file_inject(content, filename, wrap=76):
         "script": script,
         "fingerprint": syllable_fingerprint(norm),
         "bytes": len(raw),
-        "b64_lines": len(lines),
+        "lines": len(lines),
+        "encoding": encoding,
+        "decoder": decoder,
     }

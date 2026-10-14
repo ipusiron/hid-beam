@@ -43,8 +43,8 @@ from flask import (
 
 import hid_core
 from hid_core import (
-    compile_script, compile_payload, build_file_inject, DuckyCompileError,
-    DEFAULT_LIMITS,
+    compile_script, compile_payload, build_file_inject, predict_display,
+    DuckyCompileError, DEFAULT_LIMITS,
 )
 
 
@@ -352,6 +352,10 @@ STRINGS = {
         "file_hint": "内容をbase64で送り、対向機で base64 -d で復元し、末尾の sha256sum で検証します。US配列を推奨します。",
         "diag_link": "レイアウト診断",
         "diag_note": "この診断文字列を送り、対向機の表示が次と完全に一致するか確認してください（一致＝レイアウトが合っている）:",
+        "diag_mismatch": "もし対向機が実は {other} 配列なら、こう表示されます（これに一致したら {other} に切り替える）:",
+        "enc_label": "エンコード",
+        "enc_base64": "base64（US向け）",
+        "enc_hex": "hex（US/JIS両対応・xxd）",
         "fp_head": "完全性フィンガープリント",
         "fp_sha": "SHA-256（先頭8桁）",
         "fp_words": "音節トークン",
@@ -402,6 +406,10 @@ STRINGS = {
         "file_hint": "Sends the content as base64, restores it on the target with base64 -d, and verifies with the trailing sha256sum. US layout recommended.",
         "diag_link": "Layout test",
         "diag_note": "Send this diagnostic string and check the target shows exactly the following (match = layout is correct):",
+        "diag_mismatch": "If the target is actually {other} layout, it will show this (if this matches, switch to {other}):",
+        "enc_label": "Encoding",
+        "enc_base64": "base64 (for US)",
+        "enc_hex": "hex (US/JIS both, xxd)",
         "fp_head": "Integrity fingerprint",
         "fp_sha": "SHA-256 (first 8)",
         "fp_words": "Syllables",
@@ -504,6 +512,10 @@ PAGE = """<!doctype html>
     {% if mode=='file' %}
     <p class="hint">{{ t.file_hint }}</p>
     <div class="layout">{{ t.filename_label }}: <input type="text" name="filename" value="{{ filename }}" placeholder="example.conf"></div>
+    <div class="layout">{{ t.enc_label }}:
+      <label><input type="radio" name="encoding" value="base64" {% if encoding!='hex' %}checked{% endif %}>{{ t.enc_base64 }}</label>
+      <label><input type="radio" name="encoding" value="hex" {% if encoding=='hex' %}checked{% endif %}>{{ t.enc_hex }}</label>
+    </div>
     {% endif %}
     <div class="layout">{{ t.layout }}:
       <label><input type="radio" name="layout" value="us" {% if layout=='us' %}checked{% endif %}>US</label>
@@ -513,7 +525,9 @@ PAGE = """<!doctype html>
     <br><button type="submit">{{ t.preview_btn }}</button>
   </form>
   <p class="hint"><a href="{{ url_for('layout_test', layout=layout) }}">{{ t.diag_link }}</a></p>
-  {% if diag %}<div class="msg warn">{{ t.diag_note }}<br><code>{{ prev }}</code></div>{% endif %}
+  {% if diag %}<div class="msg warn">{{ t.diag_note }}<br><code>{{ prev }}</code>
+    {% if diag_mismatch %}<br><br>{{ t.diag_mismatch.format(other=diag_other) }}<br><code>{{ diag_mismatch }}</code>{% endif %}
+  </div>{% endif %}
 
   {% if plan %}
     <div class="msg ok"><strong>{{ t.plan_head }}</strong>
@@ -587,7 +601,7 @@ def render(**kw):
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
         detail_rows=[], detail_omitted=0, mode="ducky",
-        filename="", diag=False,
+        filename="", encoding="base64", diag=False, diag_other="", diag_mismatch="",
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -676,12 +690,13 @@ def preview():
     if mode not in ("ducky", "payload", "file"):
         mode = "ducky"
     filename = request.form.get("filename", "")
+    encoding = "hex" if request.form.get("encoding") == "hex" else "base64"
 
     try:
         if mode == "file":
-            # 内容をbase64投入スクリプトに変換し、それを逐語入力する。
+            # 内容をbase64/hex投入スクリプトに変換し、それを逐語入力する。
             # 表示するフィンガープリントは「元ファイル」のもの（対向機でsha256sum照合）。
-            gen = build_file_inject(script, filename)
+            gen = build_file_inject(script, filename, encoding=encoding)
             compiled = compile_payload(gen["script"], layout)
             compiled.fingerprint = gen["fingerprint"]
             store_script, store_mode = gen["script"], "payload"
@@ -691,13 +706,13 @@ def preview():
     except DuckyCompileError as e:
         audit("preview_reject", mode=mode, errors=len(e.errors))
         return render(prev=script, layout=layout, mode=mode, filename=filename,
-                      message="\n".join(e.errors), msg_class="err")
+                      encoding=encoding, message="\n".join(e.errors), msg_class="err")
 
     nonce = _issue_nonce(store_script, layout, store_mode)
     detail_rows, detail_omitted = compiled.detail_rows(100)
     audit("preview_ok", mode=mode, keys=compiled.key_event_count)
     return render(prev=script, layout=layout, mode=mode, filename=filename,
-                  plan=compiled.plan_summary(), nonce=nonce,
+                  encoding=encoding, plan=compiled.plan_summary(), nonce=nonce,
                   detail_rows=detail_rows, detail_omitted=detail_omitted)
 
 
@@ -710,10 +725,13 @@ def layout_test():
     compiled = compile_payload(hid_core.LAYOUT_DIAG_TEXT, layout)
     nonce = _issue_nonce(hid_core.LAYOUT_DIAG_TEXT, layout, "payload")
     detail_rows, detail_omitted = compiled.detail_rows(100)
+    other = "jis" if layout == "us" else "us"
+    mismatch = predict_display(hid_core.LAYOUT_DIAG_TEXT, layout, other)
     audit("layout_test", layout=layout)
     return render(prev=hid_core.LAYOUT_DIAG_TEXT, layout=layout, mode="payload",
                   plan=compiled.plan_summary(), nonce=nonce,
-                  detail_rows=detail_rows, detail_omitted=detail_omitted, diag=True)
+                  detail_rows=detail_rows, detail_omitted=detail_omitted,
+                  diag=True, diag_other=other, diag_mismatch=mismatch)
 
 
 @app.route("/execute", methods=["POST"])
