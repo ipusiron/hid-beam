@@ -351,8 +351,9 @@ STRINGS = {
         "filename_label": "ファイル名（対向機側）",
         "file_hint": "内容をbase64で送り、対向機で base64 -d で復元し、末尾の sha256sum で検証します。US配列を推奨します。",
         "diag_link": "レイアウト診断",
-        "diag_note": "この診断文字列を送り、対向機の表示が次と完全に一致するか確認してください（一致＝レイアウトが合っている）:",
-        "diag_mismatch": "もし対向機が実は {other} 配列なら、こう表示されます（これに一致したら {other} に切り替える）:",
+        "diag_note": "この診断文字列を送り、対向機の表示が次の表のどの行と一致するか見てください。一致した行の配列が、対向機の実レイアウトです。",
+        "diag_shows": "対向機の表示",
+        "diag_matrix_hint": "選択した配列の行（✔）と一致すれば、対向機のレイアウトは選択と合っています。別の行と一致したら、その配列に切り替えてください。",
         "enc_label": "エンコード",
         "enc_base64": "base64（US向け）",
         "enc_hex": "hex（US/JIS両対応・xxd）",
@@ -405,8 +406,9 @@ STRINGS = {
         "filename_label": "Filename (on target)",
         "file_hint": "Sends the content as base64, restores it on the target with base64 -d, and verifies with the trailing sha256sum. US layout recommended.",
         "diag_link": "Layout test",
-        "diag_note": "Send this diagnostic string and check the target shows exactly the following (match = layout is correct):",
-        "diag_mismatch": "If the target is actually {other} layout, it will show this (if this matches, switch to {other}):",
+        "diag_note": "Send this diagnostic string and see which row of the table below matches the target's display. That row's layout is the target's actual layout.",
+        "diag_shows": "Target shows",
+        "diag_matrix_hint": "If it matches the selected layout's row (✔), the target matches your selection. If it matches another row, switch to that layout.",
         "enc_label": "Encoding",
         "enc_base64": "base64 (for US)",
         "enc_hex": "hex (US/JIS both, xxd)",
@@ -520,13 +522,20 @@ PAGE = """<!doctype html>
     <div class="layout">{{ t.layout }}:
       <label><input type="radio" name="layout" value="us" {% if layout=='us' %}checked{% endif %}>US</label>
       <label><input type="radio" name="layout" value="jis" {% if layout=='jis' %}checked{% endif %}>JIS</label>
+      <label><input type="radio" name="layout" value="uk" {% if layout=='uk' %}checked{% endif %}>UK</label>
     </div>
     <textarea name="script" placeholder="DELAY 500&#10;STRING Hello&#10;ENTER">{{ prev }}</textarea>
     <br><button type="submit">{{ t.preview_btn }}</button>
   </form>
   <p class="hint"><a href="{{ url_for('layout_test', layout=layout) }}">{{ t.diag_link }}</a></p>
-  {% if diag %}<div class="msg warn">{{ t.diag_note }}<br><code>{{ prev }}</code>
-    {% if diag_mismatch %}<br><br>{{ t.diag_mismatch.format(other=diag_other) }}<br><code>{{ diag_mismatch }}</code>{% endif %}
+  {% if diag %}<div class="msg warn">{{ t.diag_note }}
+    <table class="detail">
+      <tr><th>{{ t.layout }}</th><th>{{ t.diag_shows }}</th></tr>
+      {% for row in diag_matrix %}
+      <tr><td>{{ row.layout|upper }}{% if row.is_selected %} ✔{% endif %}</td><td><code>{{ row.text }}</code></td></tr>
+      {% endfor %}
+    </table>
+    <p class="hint">{{ t.diag_matrix_hint }}</p>
   </div>{% endif %}
 
   {% if plan %}
@@ -601,7 +610,7 @@ def render(**kw):
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
         detail_rows=[], detail_omitted=0, mode="ducky",
-        filename="", encoding="base64", diag=False, diag_other="", diag_mismatch="",
+        filename="", encoding="base64", diag=False, diag_matrix=[],
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -725,13 +734,17 @@ def layout_test():
     compiled = compile_payload(hid_core.LAYOUT_DIAG_TEXT, layout)
     nonce = _issue_nonce(hid_core.LAYOUT_DIAG_TEXT, layout, "payload")
     detail_rows, detail_omitted = compiled.detail_rows(100)
-    other = "jis" if layout == "us" else "us"
-    mismatch = predict_display(hid_core.LAYOUT_DIAG_TEXT, layout, other)
+    diag_matrix = [
+        {"layout": lay,
+         "text": predict_display(hid_core.LAYOUT_DIAG_TEXT, layout, lay),
+         "is_selected": lay == layout}
+        for lay in hid_core.LAYOUTS
+    ]
     audit("layout_test", layout=layout)
     return render(prev=hid_core.LAYOUT_DIAG_TEXT, layout=layout, mode="payload",
                   plan=compiled.plan_summary(), nonce=nonce,
                   detail_rows=detail_rows, detail_omitted=detail_omitted,
-                  diag=True, diag_other=other, diag_mismatch=mismatch)
+                  diag=True, diag_matrix=diag_matrix)
 
 
 @app.route("/execute", methods=["POST"])
