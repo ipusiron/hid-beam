@@ -118,7 +118,7 @@ class TestNonceBinding(ServerTestBase):
     def test_execute_rejects_missing_nonce(self):
         self._login()
         self._arm()
-        r = self.client.post("/execute", data={"script": "STRING a", "layout": "us", "nonce": "bogus"})
+        r = self.client.post("/execute", data={"nonce": "bogus"})
         self.assertIn("有効期限", r.get_data(as_text=True))
 
     def test_nonce_is_single_use(self):
@@ -128,20 +128,39 @@ class TestNonceBinding(ServerTestBase):
         srv._hid_file = FakeHID()
         pv = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
         nonce = _nonce_from(pv.get_data(as_text=True))
-        r1 = self.client.post("/execute", data={"script": "STRING a", "layout": "us", "nonce": nonce})
+        r1 = self.client.post("/execute", data={"nonce": nonce})
         self.assertIn("送信完了", r1.get_data(as_text=True))
         # 同じノンスは二度使えない
-        r2 = self.client.post("/execute", data={"script": "STRING a", "layout": "us", "nonce": nonce})
+        r2 = self.client.post("/execute", data={"nonce": nonce})
         self.assertIn("有効期限", r2.get_data(as_text=True))
 
-    def test_nonce_bound_to_exact_script(self):
+    def test_execute_uses_previewed_script_not_posted(self):
+        # 実行対象はプレビューした内容そのもの。送信値の別スクリプトは無視される。
         self._login()
         self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
         pv = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
         nonce = _nonce_from(pv.get_data(as_text=True))
-        # プレビューと違うスクリプトを同じノンスで送ろうとすると拒否
-        r = self.client.post("/execute", data={"script": "STRING DIFFERENT", "layout": "us", "nonce": nonce})
-        self.assertIn("有効期限", r.get_data(as_text=True))
+        r = self.client.post("/execute", data={"script": "STRING ZZZZZ", "layout": "us", "nonce": nonce})
+        self.assertIn("送信完了", r.get_data(as_text=True))
+        # "a" 1キー = press/release + finally release = 3 writes（5文字なら11になるはず）
+        self.assertEqual(len(fake.writes), 3)
+
+    def test_multiline_script_roundtrips(self):
+        # 複数行スクリプト（CRLF往復でダイジェストがずれていた回帰の防止）
+        self._login()
+        self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        pv = self.client.post("/preview", data={"script": "DELAY 10\r\nSTRING ab\r\nENTER", "layout": "us"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        self.assertIsNotNone(nonce)
+        r = self.client.post("/execute", data={"nonce": nonce})
+        self.assertIn("送信完了", r.get_data(as_text=True))
+        self.assertGreater(len(fake.writes), 0)
 
 
 class TestExecuteSendsBytes(ServerTestBase):
@@ -153,7 +172,7 @@ class TestExecuteSendsBytes(ServerTestBase):
         srv._hid_file = fake
         pv = self.client.post("/preview", data={"script": "STRING ab", "layout": "us"})
         nonce = _nonce_from(pv.get_data(as_text=True))
-        r = self.client.post("/execute", data={"script": "STRING ab", "layout": "us", "nonce": nonce})
+        r = self.client.post("/execute", data={"nonce": nonce})
         self.assertIn("送信完了", r.get_data(as_text=True))
         # 2文字 → press/release が各2回 + finally release。全て8バイト。
         self.assertGreaterEqual(len(fake.writes), 4)
@@ -166,7 +185,7 @@ class TestExecuteSendsBytes(ServerTestBase):
         srv._hid_file = fake
         pv = self.client.post("/preview", data={"script": "STRING ab", "layout": "us"})
         nonce = _nonce_from(pv.get_data(as_text=True))
-        self.client.post("/execute", data={"script": "STRING ab", "layout": "us", "nonce": nonce})
+        self.client.post("/execute", data={"nonce": nonce})
         self.assertEqual(len(fake.writes), 0)  # 武装していないので1バイトも出ない
 
     def test_invalid_script_preview_rejected_no_nonce(self):
@@ -187,11 +206,11 @@ class TestRateLimit(ServerTestBase):
         for _ in range(srv.MAX_EXEC_PER_MIN):
             pv = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
             nonce = _nonce_from(pv.get_data(as_text=True))
-            self.client.post("/execute", data={"script": "STRING a", "layout": "us", "nonce": nonce})
+            self.client.post("/execute", data={"nonce": nonce})
         # 次は頻度制限で弾かれる
         pv = self.client.post("/preview", data={"script": "STRING a", "layout": "us"})
         nonce = _nonce_from(pv.get_data(as_text=True))
-        r = self.client.post("/execute", data={"script": "STRING a", "layout": "us", "nonce": nonce})
+        r = self.client.post("/execute", data={"nonce": nonce})
         self.assertIn("多すぎ", r.get_data(as_text=True))
 
 

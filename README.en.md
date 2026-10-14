@@ -134,6 +134,16 @@ Using it against other people's devices without authorization may violate laws s
 
 ---
 
+## 🔎 Known constraints and assumptions
+
+- **Plain HTTP**: no TLS, because it assumes a local AP. The token travels in the clear within the AP. Connect only the operator's single device to the AP; with multiple devices, another device on the same AP could sniff the token.
+- **AP-only binding by default**: it listens only on `192.168.100.1` by default. To run on an existing network instead of the AP, set `HIDBEAM_LISTEN_HOST` and `HIDBEAM_ALLOWED_HOSTS` for your environment (otherwise the bind IP and allowed host won't match and it won't be reachable).
+- **systemd sandbox needs on-device tuning**: `SystemCallFilter`, `MemoryDenyWriteExecute`, `DeviceAllow` etc. are deliberately strict defaults. If it fails to start on real hardware, relax them one at a time while watching the journal to find the minimal set.
+- **Development server**: it runs on Flask's development server. It targets single-operator, low-load LAN use; do not expose it to a public network.
+- **Not verified on hardware**: connection, privileges, stop, restart and error paths on a real Raspberry Pi Zero W are unverified. Do not call it "safe" until they are.
+
+---
+
 ## 📄 License
 
 MIT License. See `LICENSE`.

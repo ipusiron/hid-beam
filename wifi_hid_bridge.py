@@ -34,7 +34,6 @@ import time
 import hmac
 import secrets
 import threading
-import hashlib
 from collections import deque
 from datetime import datetime
 
@@ -208,38 +207,36 @@ def audit(event, **fields):
 
 
 # ---------- プレビュー確認ノンス（2段階実行の結合） ----------
+# プレビューしたスクリプトをサーバー側に保持し、実行はノンスだけで引き当てる。
+# スクリプト本文をHTMLの隠しフィールドで往復させないため、改行(CRLF)正規化で
+# 内容が変わる問題が起きず、クライアントによる改ざんもできない。
 
-_nonces = {}  # nonce -> (script_digest, expiry)
+_nonces = {}  # nonce -> (script, layout, expiry)
 _nonce_lock = threading.Lock()
 
 
-def _script_digest(layout, script):
-    h = hashlib.sha256()
-    h.update(layout.encode("utf-8"))
-    h.update(b"\x00")
-    h.update(script.encode("utf-8"))
-    return h.hexdigest()
-
-
-def _issue_nonce(digest):
+def _issue_nonce(script, layout):
     now = time.time()
     nonce = secrets.token_urlsafe(16)
     with _nonce_lock:
         # 期限切れを掃除
-        for k in [k for k, (_, exp) in _nonces.items() if exp <= now]:
+        for k in [k for k, v in _nonces.items() if v[2] <= now]:
             del _nonces[k]
-        _nonces[nonce] = (digest, now + PREVIEW_TTL_SEC)
+        _nonces[nonce] = (script, layout, now + PREVIEW_TTL_SEC)
     return nonce
 
 
-def _consume_nonce(nonce, digest):
+def _consume_nonce(nonce):
+    """ノンスを単回で引き当て、(script, layout) を返す。無効ならNone。"""
     now = time.time()
     with _nonce_lock:
         item = _nonces.pop(nonce, None)
     if not item:
-        return False
-    stored_digest, expiry = item
-    return expiry > now and hmac.compare_digest(stored_digest, digest)
+        return None
+    script, layout, expiry = item
+    if expiry <= now:
+        return None
+    return (script, layout)
 
 
 # ---------- HIDレポート送信 ----------
@@ -467,8 +464,6 @@ PAGE = """<!doctype html>
     {% if plan.uses_gui_modifier %}<div class="msg warn">{{ t.plan_gui_warn }}</div>{% endif %}
     {% if armed %}
       <form method="POST" action="{{ url_for('execute') }}">
-        <input type="hidden" name="script" value="{{ prev }}">
-        <input type="hidden" name="layout" value="{{ layout }}">
         <input type="hidden" name="nonce" value="{{ nonce }}">
         <button type="submit">{{ t.send_btn }}</button>
       </form>
@@ -495,6 +490,9 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Strict",
 )
+# 起動時フォールバックの秘密鍵（main() が再設定する）。WSGIサーバーから
+# app を直接ロードしてもセッションが機能するようにしておく。
+app.secret_key = secrets.token_bytes(32)
 
 
 def render(**kw):
@@ -573,7 +571,7 @@ def preview():
         audit("preview_reject", errors=len(e.errors))
         return render(prev=script, layout=layout,
                       message="\n".join(e.errors), msg_class="err")
-    nonce = _issue_nonce(_script_digest(layout, script))
+    nonce = _issue_nonce(script, layout)
     audit("preview_ok", commands=compiled.command_count,
           keys=compiled.key_event_count)
     return render(prev=script, layout=layout, plan=compiled.plan_summary(),
@@ -586,20 +584,20 @@ def execute():
     if not _origin_ok():
         abort(403)
     t = STRINGS[_lang()]
-    script = request.form.get("script", "")
-    layout = request.form.get("layout", hid_core.DEFAULT_LAYOUT)
     nonce = request.form.get("nonce", "")
 
+    # 武装チェックはノンス引き当てより先（未武装ならノンスを消費しない）
     if REQUIRE_ARM and not is_armed():
         audit("execute_reject", reason="disarmed")
-        return render(prev=script, layout=layout,
-                      message=t["need_arm_to_send"], msg_class="err")
+        return render(message=t["need_arm_to_send"], msg_class="err")
 
-    # プレビューした内容と同一であることをノンスで確認（2段階実行の結合）
-    if not _consume_nonce(nonce, _script_digest(layout, script)):
+    # プレビュー時にサーバーへ保持したスクリプトをノンスで引き当てる（単回）。
+    # 実行対象はクライアントの送信値ではなく、プレビューしたものそのもの。
+    data = _consume_nonce(nonce)
+    if data is None:
         audit("execute_reject", reason="nonce")
-        return render(prev=script, layout=layout,
-                      message=t["preview_expired"], msg_class="err")
+        return render(message=t["preview_expired"], msg_class="err")
+    script, layout = data
 
     if not _rate_allow_exec():
         audit("execute_reject", reason="rate")
