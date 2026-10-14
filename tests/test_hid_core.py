@@ -361,6 +361,33 @@ class TestFileInjectHex(unittest.TestCase):
             build_file_inject("x", "f", encoding="rot13")
 
 
+class TestUKLayout(unittest.TestCase):
+    def test_at_quote_swap(self):
+        # UK: @ は Shift+'(0x34)、" は Shift+2(0x1F)
+        self.assertEqual(char_to_keycode("@", "uk"), (0x34, hid_core.MOD_LSHIFT))
+        self.assertEqual(char_to_keycode('"', "uk"), (0x1F, hid_core.MOD_LSHIFT))
+
+    def test_hash_and_tilde(self):
+        self.assertEqual(char_to_keycode("#", "uk"), (0x32, 0))
+        self.assertEqual(char_to_keycode("~", "uk"), (0x32, hid_core.MOD_LSHIFT))
+
+    def test_backslash_pipe(self):
+        self.assertEqual(char_to_keycode("\\", "uk"), (0x64, 0))
+        self.assertEqual(char_to_keycode("|", "uk"), (0x64, hid_core.MOD_LSHIFT))
+
+    def test_letters_same_as_us(self):
+        for ch in "aZ5 ":
+            self.assertEqual(char_to_keycode(ch, "uk"), char_to_keycode(ch, "us"))
+
+    def test_diag_typeable_in_uk(self):
+        c = compile_payload(LAYOUT_DIAG_TEXT, "uk")
+        self.assertEqual(c.key_event_count, len(LAYOUT_DIAG_TEXT))
+
+    def test_predict_us_at_on_uk(self):
+        self.assertEqual(predict_display("@", "us", "uk"), '"')
+        self.assertEqual(predict_display('"', "us", "uk"), "@")
+
+
 class TestPredictDisplay(unittest.TestCase):
     def test_us_at_shows_as_doublequote_on_jis(self):
         # US で "@"(Shift+2) を打つと、実JISでは同じ Shift+2 位置の '"' に見える

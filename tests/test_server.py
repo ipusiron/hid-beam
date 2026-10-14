@@ -368,12 +368,19 @@ class TestLayoutTest(ServerTestBase):
         r = self.client.get("/layout-test?layout=us")
         self.assertEqual(r.status_code, 403)
 
-    def test_layout_test_shows_mismatch_prediction(self):
+    def test_layout_test_shows_matrix(self):
         self._login()
         r = self.client.get("/layout-test?layout=us")
         html = r.get_data(as_text=True)
-        self.assertIn("実は jis", html)   # 不一致予測の対象レイアウト
-        self.assertIn("配列なら", html)
+        self.assertIn("実レイアウト", html)  # diag_note
+        self.assertIn("JIS", html)           # マトリクスの行
+        self.assertIn("UK", html)            # UK 行（第6弾で追加）
+
+    def test_layout_test_uk_selectable(self):
+        self._login()
+        r = self.client.get("/layout-test?layout=uk")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("✔", r.get_data(as_text=True))  # 選択行(UK)にマーカー
 
 
 if __name__ == "__main__":

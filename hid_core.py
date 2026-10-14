@@ -104,9 +104,27 @@ KEYMAP_JIS_SHIFT = {
     "_": 0x87, "|": 0x89,
 }
 
+# UK（英国ISO）配列。US からの差分は確度の高い範囲のみ反映する。
+#  - Shift+2 = "（US は @）、Shift+' = @（US は "）… 有名な入れ替え
+#  - # は Non-US # キー(0x32)で単独、~ はその Shift
+#  - \ | は Non-US \ キー(0x64)
+#  - £ ¬ ¦ € 等の非ASCIIは扱わない（本ツールはASCII打鍵のみ）
+# 新しい配列は実機で使う前に、必ずレイアウト診断で表示を確認すること。
+KEYMAP_UK_NOSHIFT = dict(KEYMAP_US_NOSHIFT)
+KEYMAP_UK_NOSHIFT["\\"] = 0x64
+KEYMAP_UK_NOSHIFT["#"] = 0x32
+
+KEYMAP_UK_SHIFT = dict(KEYMAP_US_SHIFT)
+KEYMAP_UK_SHIFT["@"] = 0x34    # Shift+'
+KEYMAP_UK_SHIFT['"'] = 0x1F    # Shift+2
+KEYMAP_UK_SHIFT["~"] = 0x32    # Non-US # キーの Shift
+KEYMAP_UK_SHIFT["|"] = 0x64    # Non-US \ キーの Shift
+del KEYMAP_UK_SHIFT["#"]       # UK の Shift+3 は £（非ASCII）。# は 0x32 単独
+
 LAYOUTS = {
     "us": (KEYMAP_US_NOSHIFT, KEYMAP_US_SHIFT),
     "jis": (KEYMAP_JIS_NOSHIFT, KEYMAP_JIS_SHIFT),
+    "uk": (KEYMAP_UK_NOSHIFT, KEYMAP_UK_SHIFT),
 }
 DEFAULT_LAYOUT = "us"
 

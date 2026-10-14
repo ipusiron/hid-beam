@@ -39,14 +39,14 @@ Most existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., Rubber Ducky, …) 
 - **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. It also lists each keystroke's HID Usage ID and modifier, so you can see exactly what will be typed before sending. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
 - **Verified data-entry mode**: a mode that types raw data verbatim instead of DuckyScript. It shows an integrity fingerprint (SHA-256 + word tokens) of the payload so you can cross-check it on the target afterwards. For reliably getting config files, keys or base64 blobs into an isolated machine.
 - **File inject mode**: base64- or hex-encodes a small file and types a script that restores it with `base64 -d` / `xxd -r -p` and verifies with a trailing `sha256sum`. hex uses only `0-9a-f` and works under both US and JIS. Gets config files or keys into an isolated machine that has no USB storage.
-- **Layout test**: types a string of symbols that sit on different keys under US vs JIS, so you can confirm the target shows the reference before sending real data. It also predicts what the target would display if its actual layout differs, so you can tell which way it is mismatched — heading off the most common keystroke-injection failure.
+- **Layout test (matrix)**: types a string of symbols that sit on different keys across layouts, so you can confirm the target shows the reference before sending real data. It also shows a matrix of what that string would display under US / JIS / UK, so you can identify the target's actual layout from the row that matches — heading off the most common keystroke-injection failure.
 - **Token authentication**: only someone who knows the per-boot token can operate it. Joining the AP is not enough to send.
 - **Disarmed by default**: sending is disabled by default. It is enabled only for a short window when you run `hidbeam_arm.py` on the Pi; it auto-disarms when the window expires.
 - **Physical arm/abort buttons (optional)**: with `hidbeam_gpio.py`, a GPIO button arms the device and another button aborts immediately (requires wiring).
 - **Privilege separation**: the bridge runs as a dedicated non-root user and writes only to `/dev/hidg0`, under a systemd sandbox.
 - **AP-interface-only binding**: it does not listen on all interfaces (0.0.0.0). Host/Origin checks and limits on request rate, input size and total duration are enforced.
 - **Browser UI (bilingual, responsive)**: a Flask web UI (port 8080) that toggles Japanese/English and works at phone width.
-- **US / JIS layout switching**: selectable from the web UI.
+- **US / JIS / UK layout switching**: selectable from the web UI (UK follows the standard ISO layout; verify any new layout with the layout test before real use).
 - **AP mode**: with hostapd + dnsmasq the Pi Zero W becomes its own Wi-Fi access point, isolated from existing networks. A preflight check stops startup if the AP passphrase is left at its default.
 - **Audit log**: records only the time, counts and result of each send — never the input text or the token.
 - **systemd service**: the HID gadget and the bridge start automatically at boot.
