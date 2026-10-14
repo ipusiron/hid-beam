@@ -263,5 +263,46 @@ class TestPayloadAndHeaders(ServerTestBase):
         self.assertEqual(r.headers.get("X-Content-Type-Options"), "nosniff")
 
 
+class TestPayloadMode(ServerTestBase):
+    def test_preview_payload_shows_fingerprint(self):
+        self._login()
+        pv = self.client.post("/preview", data={"script": "secret-data", "layout": "us", "mode": "payload"})
+        html = pv.get_data(as_text=True)
+        self.assertIn("フィンガープリント", html)
+        self.assertIn(srv.hid_core.syllable_fingerprint("secret-data")["short"], html)
+
+    def test_payload_execute_types_data(self):
+        self._login()
+        self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        pv = self.client.post("/preview", data={"script": "ab", "layout": "us", "mode": "payload"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        r = self.client.post("/execute", data={"nonce": nonce})
+        self.assertIn("送信完了", r.get_data(as_text=True))
+        self.assertGreaterEqual(len(fake.writes), 2)
+
+    def test_payload_rejects_unsupported(self):
+        self._login()
+        pv = self.client.post("/preview", data={"script": "aあb", "layout": "us", "mode": "payload"})
+        html = pv.get_data(as_text=True)
+        self.assertIn("入力できない", html)
+        self.assertIsNone(_nonce_from(html))
+
+    def test_payload_not_parsed_as_ducky(self):
+        # payload モードでは "ENTER" はコマンドでなく 5 文字として扱う（送信バイトで確認）
+        self._login()
+        self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        pv = self.client.post("/preview", data={"script": "ENTER", "layout": "us", "mode": "payload"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        self.client.post("/execute", data={"nonce": nonce})
+        # 5文字 → press/release 各5 + finally release = 11 writes（ENTERキー1発なら3）
+        self.assertEqual(len(fake.writes), 11)
+
+
 if __name__ == "__main__":
     unittest.main()

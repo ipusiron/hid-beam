@@ -42,7 +42,7 @@ from flask import (
 )
 
 import hid_core
-from hid_core import compile_script, DuckyCompileError, DEFAULT_LIMITS
+from hid_core import compile_script, compile_payload, DuckyCompileError, DEFAULT_LIMITS
 
 
 # ---------- 設定（環境変数で上書き可能。既定は安全側） ----------
@@ -214,32 +214,39 @@ def audit(event, **fields):
 # スクリプト本文をHTMLの隠しフィールドで往復させないため、改行(CRLF)正規化で
 # 内容が変わる問題が起きず、クライアントによる改ざんもできない。
 
-_nonces = {}  # nonce -> (script, layout, expiry)
+_nonces = {}  # nonce -> (script, layout, mode, expiry)
 _nonce_lock = threading.Lock()
 
 
-def _issue_nonce(script, layout):
+def _compile_for_mode(script, layout, mode):
+    """入力モードに応じてコンパイルする。payload=生データ逐語投入、それ以外=DuckyScript。"""
+    if mode == "payload":
+        return compile_payload(script, layout)
+    return compile_script(script, layout)
+
+
+def _issue_nonce(script, layout, mode):
     now = time.time()
     nonce = secrets.token_urlsafe(16)
     with _nonce_lock:
         # 期限切れを掃除
-        for k in [k for k, v in _nonces.items() if v[2] <= now]:
+        for k in [k for k, v in _nonces.items() if v[3] <= now]:
             del _nonces[k]
-        _nonces[nonce] = (script, layout, now + PREVIEW_TTL_SEC)
+        _nonces[nonce] = (script, layout, mode, now + PREVIEW_TTL_SEC)
     return nonce
 
 
 def _consume_nonce(nonce):
-    """ノンスを単回で引き当て、(script, layout) を返す。無効ならNone。"""
+    """ノンスを単回で引き当て、(script, layout, mode) を返す。無効ならNone。"""
     now = time.time()
     with _nonce_lock:
         item = _nonces.pop(nonce, None)
     if not item:
         return None
-    script, layout, expiry = item
+    script, layout, mode, expiry = item
     if expiry <= now:
         return None
-    return (script, layout)
+    return (script, layout, mode)
 
 
 # ---------- HIDレポート送信 ----------
@@ -333,6 +340,14 @@ STRINGS = {
         "col_usage": "Usage ID",
         "col_mod": "修飾キー",
         "detail_more": "ほか {n} 件（表示は先頭のみ）",
+        "mode_label": "入力モード",
+        "mode_ducky": "DuckyScript",
+        "mode_payload": "データ投入（検証付き）",
+        "mode_payload_hint": "生データをそのまま逐語入力します。改行はENTER。未対応文字があれば送信せず拒否します。",
+        "fp_head": "完全性フィンガープリント",
+        "fp_sha": "SHA-256（先頭8桁）",
+        "fp_words": "音節トークン",
+        "fp_hint": "投入後、対向機で同じデータの sha256 を出し（例: sha256sum）、先頭8桁と音節を突き合わせてください。一致すれば壊れずに入っています。",
         "need_arm_to_send": "送信するには、先にPi上で武装してください。",
         "sent_ok": "送信完了（レイアウト: {layout}、打鍵 {keys} 件）",
         "preview_expired": "プレビューの有効期限が切れました。もう一度プレビューしてください。",
@@ -370,6 +385,14 @@ STRINGS = {
         "col_usage": "Usage ID",
         "col_mod": "Modifier",
         "detail_more": "+{n} more (showing the first rows only)",
+        "mode_label": "Input mode",
+        "mode_ducky": "DuckyScript",
+        "mode_payload": "Data entry (verified)",
+        "mode_payload_hint": "Types raw data verbatim. Newlines become ENTER. Rejected (not sent) if any character is unsupported.",
+        "fp_head": "Integrity fingerprint",
+        "fp_sha": "SHA-256 (first 8)",
+        "fp_words": "Syllables",
+        "fp_hint": "After entry, compute sha256 of the same data on the target (e.g. sha256sum) and compare the first 8 hex and the syllables. A match means it arrived intact.",
         "need_arm_to_send": "Arm the device on the Pi before sending.",
         "sent_ok": "Sent (layout: {layout}, {keys} key events)",
         "preview_expired": "Preview expired. Please preview again.",
@@ -459,6 +482,11 @@ PAGE = """<!doctype html>
   <p class="hint">{{ t.hint }}</p>
 
   <form method="POST" action="{{ url_for('preview') }}">
+    <div class="layout">{{ t.mode_label }}:
+      <label><input type="radio" name="mode" value="ducky" {% if mode!='payload' %}checked{% endif %}>{{ t.mode_ducky }}</label>
+      <label><input type="radio" name="mode" value="payload" {% if mode=='payload' %}checked{% endif %}>{{ t.mode_payload }}</label>
+    </div>
+    {% if mode=='payload' %}<p class="hint">{{ t.mode_payload_hint }}</p>{% endif %}
     <div class="layout">{{ t.layout }}:
       <label><input type="radio" name="layout" value="us" {% if layout=='us' %}checked{% endif %}>US</label>
       <label><input type="radio" name="layout" value="jis" {% if layout=='jis' %}checked{% endif %}>JIS</label>
@@ -477,6 +505,15 @@ PAGE = """<!doctype html>
       {% if plan.specials %}<tr><td>{{ t.plan_specials }}</td><td>{{ plan.specials|join(', ') }}</td></tr>{% endif %}
     </table>
     </div>
+    {% if plan.fingerprint %}
+    <div class="msg ok"><strong>{{ t.fp_head }}</strong>
+      <table>
+        <tr><td>{{ t.fp_sha }}</td><td><code>{{ plan.fingerprint.short }}</code></td></tr>
+        <tr><td>{{ t.fp_words }}</td><td><code>{{ plan.fingerprint.words }}</code></td></tr>
+      </table>
+      <p class="hint">{{ t.fp_hint }}</p>
+    </div>
+    {% endif %}
     {% if detail_rows %}
     <details open>
       <summary>{{ t.detail_head }}</summary>
@@ -529,7 +566,7 @@ def render(**kw):
         lang=_lang(), t=t, authed=session.get("authed", False),
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
-        detail_rows=[], detail_omitted=0,
+        detail_rows=[], detail_omitted=0, mode="ducky",
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -614,17 +651,18 @@ def preview():
     layout = request.form.get("layout", hid_core.DEFAULT_LAYOUT)
     if layout not in hid_core.LAYOUTS:
         layout = hid_core.DEFAULT_LAYOUT
+    mode = "payload" if request.form.get("mode") == "payload" else "ducky"
     try:
-        compiled = compile_script(script, layout)
+        compiled = _compile_for_mode(script, layout, mode)
     except DuckyCompileError as e:
-        audit("preview_reject", errors=len(e.errors))
-        return render(prev=script, layout=layout,
+        audit("preview_reject", mode=mode, errors=len(e.errors))
+        return render(prev=script, layout=layout, mode=mode,
                       message="\n".join(e.errors), msg_class="err")
-    nonce = _issue_nonce(script, layout)
+    nonce = _issue_nonce(script, layout, mode)
     detail_rows, detail_omitted = compiled.detail_rows(100)
-    audit("preview_ok", commands=compiled.command_count,
+    audit("preview_ok", mode=mode, commands=compiled.command_count,
           keys=compiled.key_event_count)
-    return render(prev=script, layout=layout, plan=compiled.plan_summary(),
+    return render(prev=script, layout=layout, mode=mode, plan=compiled.plan_summary(),
                   nonce=nonce, detail_rows=detail_rows, detail_omitted=detail_omitted)
 
 
@@ -647,19 +685,19 @@ def execute():
     if data is None:
         audit("execute_reject", reason="nonce")
         return render(message=t["preview_expired"], msg_class="err")
-    script, layout = data
+    script, layout, mode = data
 
     if not _rate_allow_exec():
         audit("execute_reject", reason="rate")
-        return render(prev=script, layout=layout,
+        return render(prev=script, layout=layout, mode=mode,
                       message=t["rate_limited"], msg_class="err")
 
     # 送信直前にもう一度、全体を検証（部分送信を構造的に排除）
     try:
-        compiled = compile_script(script, layout)
+        compiled = _compile_for_mode(script, layout, mode)
     except DuckyCompileError as e:
         audit("execute_reject", reason="compile", errors=len(e.errors))
-        return render(prev=script, layout=layout,
+        return render(prev=script, layout=layout, mode=mode,
                       message="\n".join(e.errors), msg_class="err")
 
     errors = execute_compiled(compiled)
