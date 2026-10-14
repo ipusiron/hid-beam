@@ -1,0 +1,10 @@
+# HIDBeam - /dev/hidg0 のアクセス権設定（udev ルール）
+#
+# USB HID ガジェット（/dev/hidg0, hidg1, ...）のグループを hidbeam にし、
+# グループ書き込みを許可する。これにより wifi-hid-bridge を root ではなく
+# 専用ユーザー hidbeam で動かせる（権限最小化）。
+#
+# 配置：/etc/udev/rules.d/99-hidbeam-hidg.rules
+# 反映：sudo udevadm control --reload && sudo udevadm trigger
+# 前提：グループ hidbeam を作成済み（groupadd --system hidbeam）
+KERNEL=="hidg[0-9]*", GROUP="hidbeam", MODE="0660"

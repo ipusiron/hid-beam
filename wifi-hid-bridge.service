@@ -1,15 +1,57 @@
 [Unit]
 Description=Wi-Fi HID Bridge Web UI (DuckyScript executor)
-Documentation=https://github.com/ipusiron/book_AirGapInput
+Documentation=https://github.com/ipusiron/hid-beam
 After=hid-gadget.service network.target
 Requires=hid-gadget.service
 
 [Service]
 Type=simple
+# root では動かさない。/dev/hidg0 へ書けるだけの専用ユーザーで動かす。
+# 事前に次を実行しておくこと:
+#   sudo groupadd --system hidbeam
+#   sudo useradd  --system --no-create-home --shell /usr/sbin/nologin --gid hidbeam hidbeam
+# udev ルール 99-hidbeam-hidg.rules により /dev/hidg0 の group が hidbeam になる。
+User=hidbeam
+Group=hidbeam
+
+# 起動前チェック: AP設定が初期パスフレーズ/弱いパスフレーズのままなら起動を失敗させる。
+# hostapd.conf は root のみ読める場合があるため、"+" を付けて root で実行する。
+ExecStartPre=+/usr/local/bin/hidbeam-preflight.sh
 ExecStart=/usr/bin/python3 /opt/wifi-hid-bridge/wifi_hid_bridge.py
 Restart=on-failure
 RestartSec=5
-User=root
+
+# per-boot の状態（token / armed / audit.log）を置くディレクトリ。
+# systemd が /run/wifi-hid-bridge を hidbeam 所有・0700 で作成する。
+RuntimeDirectory=wifi-hid-bridge
+RuntimeDirectoryMode=0700
+Environment=HIDBEAM_RUN_DIR=/run/wifi-hid-bridge
+
+# --- systemd サンドボックス（権限最小化） ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+# ネットワークとHID書き込み以外の特権は不要
+CapabilityBoundingSet=
+AmbientCapabilities=
+# /dev/hidg0 だけ読み書きを許可する
+DeviceAllow=/dev/hidg0 rw
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
