@@ -1,0 +1,146 @@
+# HIDBeam - Wi-Fi Controlled HID Keyboard Bridge
+
+**Day113 - Security Tools with Generative AI 200**
+
+HIDBeam turns a Raspberry Pi Zero W into a **USB HID keyboard you can drive over Wi-Fi**. Text or Ducky Script sent from your main PC's browser is typed by the Pi Zero W into the adjacent machine as a USB keyboard.
+
+It provides an input channel that **can do nothing but "act as a keyboard"** toward an air-gapped machine that has no network connectivity. It repurposes the same HID emulation technique as the BadUSB attack tool for defensive, operator-controlled use.
+
+> This tool is intended for data input into isolated environments that you own and operate (legitimate use). It is not meant for unauthorized use against other people's devices.
+
+---
+
+## 📖 Relation to the book
+
+This tool is the independent, continuously improved version of the software explained in **Chapter 7, "Wi-Fi HID Bridge"** of the doujin book *Air-Gap Bridge: Data Input Techniques for Isolated Environments* (by IPUSIRON).
+
+- The code printed in the book is a **snapshot at the time of writing** that readers can reproduce for as long as the book exists.
+- This repository is the **home of the improved version**. The book's sample repository ([sample_AirGapInput](https://github.com/ipusiron/sample_AirGapInput)) points here as well.
+
+---
+
+## ✨ What's different
+
+Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), this tool is designed around the following principles.
+
+- **Remote HID keyboard over Wi-Fi**: type into an isolated machine from a browser without physically re-plugging a keyboard.
+- **Auditable by minimal implementation**: the Ducky Script interpreter core is small enough to read end to end — important for defensive use.
+- **No third-party host dependency**: the source lives in the book and this repository, unaffected by any external service shutting down.
+
+---
+
+## 🔧 Features
+
+- **Ducky Script 1.0 subset interpreter**: `STRING` / `ENTER` / `TAB` / `DELAY` / `GUI`/`CTRL`/`ALT`/`SHIFT` modifier combos / `REM`.
+- **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
+- **Token authentication**: only someone who knows the per-boot token can operate it. Joining the AP is not enough to send.
+- **Disarmed by default**: sending is disabled by default. It is enabled only for a short window when you run `hidbeam_arm.py` on the Pi; it auto-disarms when the window expires.
+- **Privilege separation**: the bridge runs as a dedicated non-root user and writes only to `/dev/hidg0`, under a systemd sandbox.
+- **AP-interface-only binding**: it does not listen on all interfaces (0.0.0.0). Host/Origin checks and limits on request rate, input size and total duration are enforced.
+- **Browser UI (bilingual, responsive)**: a Flask web UI (port 8080) that toggles Japanese/English and works at phone width.
+- **US / JIS layout switching**: selectable from the web UI.
+- **AP mode**: with hostapd + dnsmasq the Pi Zero W becomes its own Wi-Fi access point, isolated from existing networks. A preflight check stops startup if the AP passphrase is left at its default.
+- **Audit log**: records only the time, counts and result of each send — never the input text or the token.
+- **systemd service**: the HID gadget and the bridge start automatically at boot.
+
+---
+
+## 🧩 Files
+
+| File | Role |
+|---|---|
+| `wifi_hid_bridge.py` | Web UI and HID sending (Python + Flask): auth, arming, preview confirmation, limits, audit |
+| `hid_core.py` | Ducky Script parse/validation core (hardware-independent); validates the whole script before sending |
+| `hidbeam_arm.py` | Local command to arm for a short window (cannot arm over the network) |
+| `hidbeam-preflight.sh` | Preflight check; blocks startup on a default/weak AP passphrase |
+| `setup-hid-gadget.sh` | configfs script that creates the USB HID keyboard gadget |
+| `99-hidbeam-hidg.rules` | udev rule letting the dedicated group `hidbeam` write to `/dev/hidg0` |
+| `hid-gadget.service` | systemd unit running the script above at boot |
+| `wifi-hid-bridge.service` | systemd unit running the bridge as a dedicated user (sandboxed) |
+| `hostapd-ap.conf` | hostapd config to run the Pi Zero W as a Wi-Fi AP |
+| `dnsmasq-ap.conf` | DHCP config for AP clients (no gateway/DNS handed out) |
+| `dhcpcd-ap.conf` | static IP for wlan0 (192.168.100.1/24) |
+| `requirements.txt` | Python dependency (Flask) |
+| `tests/` | unit tests for `hid_core`, `hidbeam_arm` and the web gates |
+
+---
+
+## 🖥 Requirements
+
+- Raspberry Pi Zero W (USB OTG / DWC2 capable)
+- Raspberry Pi OS (verified on Bookworm)
+- Python 3 + Flask (`pip install -r requirements.txt`)
+
+See Chapter 7 of the book and the in-file comments for detailed setup.
+
+---
+
+## ⚙️ Setup and operation
+
+Run this once to create the dedicated user.
+
+```bash
+sudo groupadd --system hidbeam
+sudo useradd  --system --no-create-home --shell /usr/sbin/nologin --gid hidbeam hidbeam
+sudo cp 99-hidbeam-hidg.rules /etc/udev/rules.d/
+sudo install -m 0755 hidbeam-preflight.sh /usr/local/bin/hidbeam-preflight.sh
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+Each send follows this order.
+
+1. Start the bridge (already running if installed as a systemd service). Read the per-boot token from the Pi's journal (`journalctl -u wifi-hid-bridge`) or from `/run/wifi-hid-bridge/token`.
+2. Just before sending, arm on the Pi: `python3 hidbeam_arm.py --minutes 2` (max 10).
+3. On your main PC, open `http://192.168.100.1:8080/` and enter the token.
+4. Write the script, press "Preview", and review the keystroke plan.
+5. If it looks right, press "Send this". The send button does not appear unless armed.
+6. When done, disarm: `python3 hidbeam_arm.py --disarm`.
+
+> Arming/disarming can only be done on the Pi; it cannot be done over the network. Even if the token leaks, sending will not start unless you arm locally.
+
+---
+
+## ✅ Tests
+
+The parse/validation core, the arming logic and the web UI security gates are covered by unit tests that run without hardware.
+
+```bash
+pip install -r requirements.txt
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests on Python 3.10–3.12 and lints the shell scripts.
+
+---
+
+## 🛡 Security positioning
+
+HIDBeam is functionally the same mechanism as BadUSB (HID injection). Because keystrokes can lead to arbitrary command execution or data manipulation on the target, **this tool cannot be proven "safe."** It only layers the following defenses so that unintended or unauthorized sends are less likely.
+
+- Listens only on the AP interface (never on 0.0.0.0).
+- Only someone who knows the per-boot token can operate it (AP membership is not enough).
+- Disarmed by default; sends only when armed locally on the Pi.
+- Sending is a two-step "preview → confirm"; a single request never sends.
+- Host/Origin checks and limits on input size, send rate and total duration.
+- Privilege separation (dedicated user + systemd sandbox).
+- The audit log keeps only result summaries, never the input text or the token.
+
+The tool assumes defensive, legitimate operation:
+
+- The target is an isolated environment that you own and operate.
+- Unlike an attacker's BadUSB, the device's identity and behavior are known to the operator.
+
+Using it against other people's devices without authorization may violate laws such as the Unauthorized Computer Access Act (in Japan). Do not call it "safe" until you have verified connection, privileges, stop, restart and error paths on real hardware.
+
+---
+
+## 📄 License
+
+MIT License. See `LICENSE`.
+
+---
+
+## 🔗 Links
+
+- Book sample repository: https://github.com/ipusiron/sample_AirGapInput
+- Sister book (output edition) sample: https://github.com/ipusiron/sample_AirGapOutput

@@ -71,4 +71,11 @@ ln -s functions/hid.usb0 configs/c.1/
 UDC=$(ls /sys/class/udc | head -n1)
 echo "$UDC" > UDC
 
+# /dev/hidg0 を専用グループ hidbeam が書けるようにする（udev ルールのフォールバック）。
+# これにより wifi-hid-bridge を root ではなく hidbeam ユーザーで動かせる。
+if getent group hidbeam >/dev/null 2>&1; then
+    chgrp hidbeam /dev/hidg0 2>/dev/null || true
+    chmod 0660 /dev/hidg0 2>/dev/null || true
+fi
+
 echo "HID gadget activated: /dev/hidg0 (UDC=$UDC)"
