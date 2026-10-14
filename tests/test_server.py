@@ -304,5 +304,55 @@ class TestPayloadMode(ServerTestBase):
         self.assertEqual(len(fake.writes), 11)
 
 
+class TestFileInjectMode(ServerTestBase):
+    def test_file_preview_shows_file_fingerprint(self):
+        self._login()
+        self._arm()  # 送信フォーム（ノンス欄）は武装時のみ描画される
+        content = "key=1\nhost=2\n"
+        pv = self.client.post("/preview", data={
+            "script": content, "layout": "us", "mode": "file", "filename": "app.conf"})
+        html = pv.get_data(as_text=True)
+        fp = srv.hid_core.syllable_fingerprint(content)
+        self.assertIn(fp["short"], html)
+        self.assertIsNotNone(_nonce_from(html))
+
+    def test_file_bad_filename_rejected(self):
+        self._login()
+        pv = self.client.post("/preview", data={
+            "script": "x", "layout": "us", "mode": "file", "filename": "a b"})
+        html = pv.get_data(as_text=True)
+        self.assertIn("ファイル名", html)
+        self.assertIsNone(_nonce_from(html))
+
+    def test_file_execute_types_generated_script(self):
+        self._login()
+        self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        pv = self.client.post("/preview", data={
+            "script": "hi", "layout": "us", "mode": "file", "filename": "f.txt"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        r = self.client.post("/execute", data={"nonce": nonce})
+        self.assertIn("送信完了", r.get_data(as_text=True))
+        self.assertGreater(len(fake.writes), 10)  # 生成スクリプトはそれなりに長い
+
+
+class TestLayoutTest(ServerTestBase):
+    def test_layout_test_renders_diag(self):
+        self._login()
+        self._arm()  # 送信フォーム（ノンス欄）は武装時のみ描画される
+        r = self.client.get("/layout-test?layout=us")
+        html = r.get_data(as_text=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("診断文字列", html)       # diag ノート固有（リンク文言ではない）
+        self.assertIn("layout check", html)      # 診断文字列の先頭（エスケープされない部分）
+        self.assertIsNotNone(_nonce_from(html))
+
+    def test_layout_test_requires_auth(self):
+        r = self.client.get("/layout-test?layout=us")
+        self.assertEqual(r.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

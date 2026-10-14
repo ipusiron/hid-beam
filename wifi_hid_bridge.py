@@ -42,7 +42,10 @@ from flask import (
 )
 
 import hid_core
-from hid_core import compile_script, compile_payload, DuckyCompileError, DEFAULT_LIMITS
+from hid_core import (
+    compile_script, compile_payload, build_file_inject, DuckyCompileError,
+    DEFAULT_LIMITS,
+)
 
 
 # ---------- 設定（環境変数で上書き可能。既定は安全側） ----------
@@ -344,6 +347,11 @@ STRINGS = {
         "mode_ducky": "DuckyScript",
         "mode_payload": "データ投入（検証付き）",
         "mode_payload_hint": "生データをそのまま逐語入力します。改行はENTER。未対応文字があれば送信せず拒否します。",
+        "mode_file": "ファイル投入",
+        "filename_label": "ファイル名（対向機側）",
+        "file_hint": "内容をbase64で送り、対向機で base64 -d で復元し、末尾の sha256sum で検証します。US配列を推奨します。",
+        "diag_link": "レイアウト診断",
+        "diag_note": "この診断文字列を送り、対向機の表示が次と完全に一致するか確認してください（一致＝レイアウトが合っている）:",
         "fp_head": "完全性フィンガープリント",
         "fp_sha": "SHA-256（先頭8桁）",
         "fp_words": "音節トークン",
@@ -389,6 +397,11 @@ STRINGS = {
         "mode_ducky": "DuckyScript",
         "mode_payload": "Data entry (verified)",
         "mode_payload_hint": "Types raw data verbatim. Newlines become ENTER. Rejected (not sent) if any character is unsupported.",
+        "mode_file": "File inject",
+        "filename_label": "Filename (on target)",
+        "file_hint": "Sends the content as base64, restores it on the target with base64 -d, and verifies with the trailing sha256sum. US layout recommended.",
+        "diag_link": "Layout test",
+        "diag_note": "Send this diagnostic string and check the target shows exactly the following (match = layout is correct):",
         "fp_head": "Integrity fingerprint",
         "fp_sha": "SHA-256 (first 8)",
         "fp_words": "Syllables",
@@ -483,10 +496,15 @@ PAGE = """<!doctype html>
 
   <form method="POST" action="{{ url_for('preview') }}">
     <div class="layout">{{ t.mode_label }}:
-      <label><input type="radio" name="mode" value="ducky" {% if mode!='payload' %}checked{% endif %}>{{ t.mode_ducky }}</label>
+      <label><input type="radio" name="mode" value="ducky" {% if mode=='ducky' %}checked{% endif %}>{{ t.mode_ducky }}</label>
       <label><input type="radio" name="mode" value="payload" {% if mode=='payload' %}checked{% endif %}>{{ t.mode_payload }}</label>
+      <label><input type="radio" name="mode" value="file" {% if mode=='file' %}checked{% endif %}>{{ t.mode_file }}</label>
     </div>
     {% if mode=='payload' %}<p class="hint">{{ t.mode_payload_hint }}</p>{% endif %}
+    {% if mode=='file' %}
+    <p class="hint">{{ t.file_hint }}</p>
+    <div class="layout">{{ t.filename_label }}: <input type="text" name="filename" value="{{ filename }}" placeholder="example.conf"></div>
+    {% endif %}
     <div class="layout">{{ t.layout }}:
       <label><input type="radio" name="layout" value="us" {% if layout=='us' %}checked{% endif %}>US</label>
       <label><input type="radio" name="layout" value="jis" {% if layout=='jis' %}checked{% endif %}>JIS</label>
@@ -494,6 +512,8 @@ PAGE = """<!doctype html>
     <textarea name="script" placeholder="DELAY 500&#10;STRING Hello&#10;ENTER">{{ prev }}</textarea>
     <br><button type="submit">{{ t.preview_btn }}</button>
   </form>
+  <p class="hint"><a href="{{ url_for('layout_test', layout=layout) }}">{{ t.diag_link }}</a></p>
+  {% if diag %}<div class="msg warn">{{ t.diag_note }}<br><code>{{ prev }}</code></div>{% endif %}
 
   {% if plan %}
     <div class="msg ok"><strong>{{ t.plan_head }}</strong>
@@ -567,6 +587,7 @@ def render(**kw):
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
         detail_rows=[], detail_omitted=0, mode="ducky",
+        filename="", diag=False,
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -651,19 +672,48 @@ def preview():
     layout = request.form.get("layout", hid_core.DEFAULT_LAYOUT)
     if layout not in hid_core.LAYOUTS:
         layout = hid_core.DEFAULT_LAYOUT
-    mode = "payload" if request.form.get("mode") == "payload" else "ducky"
+    mode = request.form.get("mode")
+    if mode not in ("ducky", "payload", "file"):
+        mode = "ducky"
+    filename = request.form.get("filename", "")
+
     try:
-        compiled = _compile_for_mode(script, layout, mode)
+        if mode == "file":
+            # 内容をbase64投入スクリプトに変換し、それを逐語入力する。
+            # 表示するフィンガープリントは「元ファイル」のもの（対向機でsha256sum照合）。
+            gen = build_file_inject(script, filename)
+            compiled = compile_payload(gen["script"], layout)
+            compiled.fingerprint = gen["fingerprint"]
+            store_script, store_mode = gen["script"], "payload"
+        else:
+            compiled = _compile_for_mode(script, layout, mode)
+            store_script, store_mode = script, mode
     except DuckyCompileError as e:
         audit("preview_reject", mode=mode, errors=len(e.errors))
-        return render(prev=script, layout=layout, mode=mode,
+        return render(prev=script, layout=layout, mode=mode, filename=filename,
                       message="\n".join(e.errors), msg_class="err")
-    nonce = _issue_nonce(script, layout, mode)
+
+    nonce = _issue_nonce(store_script, layout, store_mode)
     detail_rows, detail_omitted = compiled.detail_rows(100)
-    audit("preview_ok", mode=mode, commands=compiled.command_count,
-          keys=compiled.key_event_count)
-    return render(prev=script, layout=layout, mode=mode, plan=compiled.plan_summary(),
-                  nonce=nonce, detail_rows=detail_rows, detail_omitted=detail_omitted)
+    audit("preview_ok", mode=mode, keys=compiled.key_event_count)
+    return render(prev=script, layout=layout, mode=mode, filename=filename,
+                  plan=compiled.plan_summary(), nonce=nonce,
+                  detail_rows=detail_rows, detail_omitted=detail_omitted)
+
+
+@app.route("/layout-test", methods=["GET"])
+def layout_test():
+    _require_authed()
+    layout = request.args.get("layout", hid_core.DEFAULT_LAYOUT)
+    if layout not in hid_core.LAYOUTS:
+        layout = hid_core.DEFAULT_LAYOUT
+    compiled = compile_payload(hid_core.LAYOUT_DIAG_TEXT, layout)
+    nonce = _issue_nonce(hid_core.LAYOUT_DIAG_TEXT, layout, "payload")
+    detail_rows, detail_omitted = compiled.detail_rows(100)
+    audit("layout_test", layout=layout)
+    return render(prev=hid_core.LAYOUT_DIAG_TEXT, layout=layout, mode="payload",
+                  plan=compiled.plan_summary(), nonce=nonce,
+                  detail_rows=detail_rows, detail_omitted=detail_omitted, diag=True)
 
 
 @app.route("/execute", methods=["POST"])

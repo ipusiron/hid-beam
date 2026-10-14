@@ -11,9 +11,12 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hid_core
+import base64 as _b64
+
 from hid_core import (
-    compile_script, compile_payload, syllable_fingerprint, DuckyCompileError,
-    Limits, KeyEvent, DelayEvent, char_to_keycode, CHAR_DELAY_MS, _FP_WORDS,
+    compile_script, compile_payload, syllable_fingerprint, build_file_inject,
+    LAYOUT_DIAG_TEXT, DuckyCompileError, Limits, KeyEvent, DelayEvent,
+    char_to_keycode, CHAR_DELAY_MS, _FP_WORDS,
 )
 
 
@@ -287,6 +290,51 @@ class TestCompilePayload(unittest.TestCase):
     def test_input_too_large(self):
         with self.assertRaises(DuckyCompileError):
             compile_payload("abcd", "us", Limits(max_input_bytes=2))
+
+
+class TestFileInject(unittest.TestCase):
+    def test_generates_decodable_script(self):
+        r = build_file_inject("hello", "out.txt")
+        self.assertIn("base64 -d > 'out.txt'", r["script"])
+        self.assertIn(_b64.b64encode(b"hello").decode(), r["script"])
+        self.assertIn("sha256sum 'out.txt'", r["script"])
+        self.assertEqual(r["bytes"], 5)
+        self.assertEqual(r["fingerprint"], syllable_fingerprint("hello"))
+
+    def test_base64_roundtrips(self):
+        content = "key=VALUE\nhost=10.0.0.1\n"
+        r = build_file_inject(content, "conf")
+        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        decoded = _b64.b64decode(body.replace("\n", "")).decode()
+        self.assertEqual(decoded, content)
+
+    def test_crlf_normalized(self):
+        r = build_file_inject("a\r\nb", "f")
+        self.assertEqual(r["fingerprint"], syllable_fingerprint("a\nb"))
+        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        self.assertEqual(_b64.b64decode(body.replace("\n", "")), b"a\nb")
+
+    def test_bad_filename_rejected(self):
+        for bad in ("a'b", "a b", "../x", "", "a;b", "a$b"):
+            with self.assertRaises(DuckyCompileError):
+                build_file_inject("x", bad)
+
+    def test_safe_filename_ok(self):
+        r = build_file_inject("x", "dir/sub_file-1.txt")
+        self.assertIn("'dir/sub_file-1.txt'", r["script"])
+
+    def test_wrapping(self):
+        r = build_file_inject("A" * 300, "f", wrap=76)
+        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        for line in body.split("\n"):
+            self.assertLessEqual(len(line), 76)
+
+
+class TestLayoutDiag(unittest.TestCase):
+    def test_diag_typeable_in_both_layouts(self):
+        for lay in ("us", "jis"):
+            c = compile_payload(LAYOUT_DIAG_TEXT, lay)
+            self.assertEqual(c.key_event_count, len(LAYOUT_DIAG_TEXT))
 
 
 if __name__ == "__main__":
