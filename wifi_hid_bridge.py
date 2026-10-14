@@ -78,8 +78,11 @@ CHAR_DELAY_SEC = hid_core.CHAR_DELAY_MS / 1000.0
 
 # 頻度・試行回数の上限
 MAX_EXEC_PER_MIN = int(_env("HIDBEAM_MAX_EXEC_PER_MIN", "12"))
+MAX_PREVIEW_PER_MIN = int(_env("HIDBEAM_MAX_PREVIEW_PER_MIN", "60"))
 MAX_AUTH_FAILS = int(_env("HIDBEAM_MAX_AUTH_FAILS", "5"))
 AUTH_LOCKOUT_SEC = int(_env("HIDBEAM_AUTH_LOCKOUT_SEC", "60"))
+# 保持する未使用ノンスの上限（メモリDoS対策。超えたら古いものから捨てる）
+MAX_NONCES = int(_env("HIDBEAM_MAX_NONCES", "64"))
 # リクエストボディの上限（hid_coreの入力上限＋フォーム余白）
 MAX_CONTENT_BYTES = DEFAULT_LIMITS.max_input_bytes + 4096
 # プレビューで発行する確認ノンスの有効期間
@@ -117,7 +120,12 @@ ACCESS_TOKEN = None  # main()で確定
 def _check_token(supplied):
     if not ACCESS_TOKEN or not supplied:
         return False
-    return hmac.compare_digest(str(supplied), str(ACCESS_TOKEN))
+    # bytes で比較する。str 同士の compare_digest は非ASCIIで TypeError になるため。
+    try:
+        return hmac.compare_digest(
+            str(supplied).encode("utf-8"), str(ACCESS_TOKEN).encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ---------- 武装状態 ----------
@@ -168,32 +176,48 @@ def _origin_ok():
 # ---------- レート制限 / ロックアウト ----------
 
 _exec_times = deque()
-_auth_fail_times = deque()
+_preview_times = deque()
+_auth_fail_times = {}  # remote_addr -> deque[epoch]（送信元ごとにロックアウト）
 _rate_lock = threading.Lock()
 
 
-def _rate_allow_exec():
+def _rate_allow(times, limit):
+    """直近60秒の件数が limit 未満なら記録してTrue。グローバルな簡易スライディング窓。"""
     now = time.time()
     with _rate_lock:
-        while _exec_times and now - _exec_times[0] > 60:
-            _exec_times.popleft()
-        if len(_exec_times) >= MAX_EXEC_PER_MIN:
+        while times and now - times[0] > 60:
+            times.popleft()
+        if len(times) >= limit:
             return False
-        _exec_times.append(now)
+        times.append(now)
         return True
 
 
-def _auth_locked():
+def _rate_allow_exec():
+    return _rate_allow(_exec_times, MAX_EXEC_PER_MIN)
+
+
+def _rate_allow_preview():
+    return _rate_allow(_preview_times, MAX_PREVIEW_PER_MIN)
+
+
+def _auth_locked(ip):
     now = time.time()
     with _rate_lock:
-        while _auth_fail_times and now - _auth_fail_times[0] > AUTH_LOCKOUT_SEC:
-            _auth_fail_times.popleft()
-        return len(_auth_fail_times) >= MAX_AUTH_FAILS
+        dq = _auth_fail_times.get(ip)
+        if not dq:
+            return False
+        while dq and now - dq[0] > AUTH_LOCKOUT_SEC:
+            dq.popleft()
+        if not dq:
+            del _auth_fail_times[ip]
+            return False
+        return len(dq) >= MAX_AUTH_FAILS
 
 
-def _record_auth_fail():
+def _record_auth_fail(ip):
     with _rate_lock:
-        _auth_fail_times.append(time.time())
+        _auth_fail_times.setdefault(ip, deque()).append(time.time())
 
 
 # ---------- 監査ログ（内容を残さない） ----------
@@ -237,6 +261,9 @@ def _issue_nonce(script, layout, mode):
         # 期限切れを掃除
         for k in [k for k, v in _nonces.items() if v[3] <= now]:
             del _nonces[k]
+        # 上限を超えたら古いものから捨てる（トークン保持者によるメモリDoS対策）
+        while len(_nonces) >= MAX_NONCES:
+            _nonces.pop(next(iter(_nonces)))
         _nonces[nonce] = (script, layout, mode, now + PREVIEW_TTL_SEC)
     return nonce
 
@@ -295,6 +322,11 @@ def execute_compiled(compiled):
     with _hid_lock:
         try:
             for step in compiled.steps:
+                # 各ステップ直前に武装期限を再確認する。長いDELAYを挟むスクリプトで
+                # 武装が途中で切れた場合、以降のキーを打たずに中断する（finallyで解放）。
+                if REQUIRE_ARM and not is_armed():
+                    errors.append("武装の期限が切れたため送信を中断しました")
+                    break
                 if isinstance(step, hid_core.KeyEvent):
                     _write_report(_build_report(step.modifier, step.keycode))
                     _write_report(RELEASE_REPORT)
@@ -666,7 +698,10 @@ def toggle_lang():
 @app.route("/auth", methods=["POST"])
 def auth():
     t = STRINGS[_lang()]
-    if _auth_locked():
+    if not _origin_ok():
+        abort(403)
+    ip = request.remote_addr or "?"
+    if _auth_locked(ip):
         audit("auth_locked")
         return render(message=t["token_locked"], msg_class="err")
     supplied = request.form.get("token", "")
@@ -674,7 +709,7 @@ def auth():
         session["authed"] = True
         audit("auth_ok")
         return redirect(url_for("index"))
-    _record_auth_fail()
+    _record_auth_fail(ip)
     audit("auth_fail")
     return render(message=t["token_bad"], msg_class="err")
 
@@ -696,6 +731,9 @@ def preview():
     if not _origin_ok():
         abort(403)
     t = STRINGS[_lang()]
+    if not _rate_allow_preview():
+        audit("preview_reject", reason="rate")
+        return render(message=t["rate_limited"], msg_class="err")
     script = request.form.get("script", "")
     layout = request.form.get("layout", hid_core.DEFAULT_LAYOUT)
     if layout not in hid_core.LAYOUTS:
@@ -736,6 +774,10 @@ def preview():
 @app.route("/layout-test", methods=["GET"])
 def layout_test():
     _require_authed()
+    t = STRINGS[_lang()]
+    if not _rate_allow_preview():
+        audit("layout_test_reject", reason="rate")
+        return render(message=t["rate_limited"], msg_class="err")
     layout = request.args.get("layout", hid_core.DEFAULT_LAYOUT)
     if layout not in hid_core.LAYOUTS:
         layout = hid_core.DEFAULT_LAYOUT
@@ -803,6 +845,8 @@ def execute():
 @app.route("/disarm", methods=["POST"])
 def disarm_route():
     _require_authed()
+    if not _origin_ok():
+        abort(403)
     disarm()
     audit("disarm")
     return redirect(url_for("index"))

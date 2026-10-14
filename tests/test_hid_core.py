@@ -402,6 +402,59 @@ def _decode_chunks(script, encoding="base64"):
     return out
 
 
+class TestStringWhitespace(unittest.TestCase):
+    def test_leading_spaces_preserved(self):
+        c = compile_script("STRING   ab", "us")  # 区切り1つを除き2スペース残る
+        self.assertEqual(c.key_event_count, 4)
+        self.assertEqual(c.steps[0].keycode, 0x2C)  # space
+        self.assertEqual(c.steps[1].keycode, 0x2C)
+
+    def test_trailing_spaces_preserved(self):
+        c = compile_script("STRING ab  ", "us")  # ab + 末尾2スペース
+        self.assertEqual(c.key_event_count, 4)
+        self.assertEqual(c.steps[2].keycode, 0x2C)
+        self.assertEqual(c.steps[3].keycode, 0x2C)
+
+    def test_line_indent_removed_but_arg_kept(self):
+        c = compile_script("   STRING  x", "us")  # 行頭インデント除去、引数は" x"
+        self.assertEqual(c.key_event_count, 2)      # space + x
+        self.assertEqual(c.steps[0].keycode, 0x2C)
+
+    def test_internal_spaces_preserved(self):
+        c = compile_script("STRING a  b", "us")     # a + 2space + b
+        self.assertEqual(c.key_event_count, 4)
+
+
+class TestComboMultiKey(unittest.TestCase):
+    def test_two_char_keys_rejected(self):
+        with self.assertRaises(DuckyCompileError) as ctx:
+            compile_script("CTRL a b", "us")
+        self.assertTrue(any("1つまで" in e for e in ctx.exception.errors))
+
+    def test_two_special_keys_rejected(self):
+        with self.assertRaises(DuckyCompileError):
+            compile_script("CTRL F1 F2", "us")
+
+    def test_single_key_combo_ok(self):
+        c = compile_script("CTRL ALT DELETE", "us")  # 修飾2つ+キー1つ
+        self.assertEqual(c.key_event_count, 1)
+        self.assertEqual(c.steps[0].keycode, hid_core.SPECIAL_KEYS["DELETE"])
+
+
+class TestFileInjectWrap(unittest.TestCase):
+    def test_base64_wrap_must_be_mult4(self):
+        with self.assertRaises(DuckyCompileError):
+            build_file_inject("x", "f", wrap=70)  # 70 % 4 != 0
+
+    def test_hex_wrap_must_be_mult2(self):
+        with self.assertRaises(DuckyCompileError):
+            build_file_inject("x", "f", encoding="hex", wrap=75)  # 75 % 2 != 0
+
+    def test_default_wrap_ok(self):
+        self.assertEqual(build_file_inject("x", "f")["chunks"], 1)
+        self.assertEqual(build_file_inject("x", "f", encoding="hex")["encoding"], "hex")
+
+
 class TestFileInjectChunked(unittest.TestCase):
     def test_default_is_single_block(self):
         r = build_file_inject("abc", "f")
