@@ -47,6 +47,7 @@ class ServerTestBase(unittest.TestCase):
         srv.REQUIRE_ORIGIN = False
         # 共有状態をリセット
         srv._exec_times.clear()
+        srv._preview_times.clear()
         srv._auth_fail_times.clear()
         srv._nonces.clear()
         srv.disarm()
@@ -56,7 +57,10 @@ class ServerTestBase(unittest.TestCase):
         self.client = srv.app.test_client()
 
     def _login(self):
-        r = self.client.post("/auth", data={"token": "testtoken"})
+        # /auth は Origin 検証を通るため、許可ホストの Origin を付ける（REQUIRE_ORIGIN
+        # が True/False どちらでも成功する）。
+        r = self.client.post("/auth", data={"token": "testtoken"},
+                             headers={"Origin": "http://localhost"})
         self.assertEqual(r.status_code, 302)  # redirect on success
 
     def _arm(self, minutes=2):
@@ -395,6 +399,31 @@ class TestLayoutTest(ServerTestBase):
         r = self.client.get("/layout-test?layout=uk")
         self.assertEqual(r.status_code, 200)
         self.assertIn("✔", r.get_data(as_text=True))  # 選択行(UK)にマーカー
+
+
+class TestArmDuringExecution(ServerTestBase):
+    def test_arm_expiry_mid_execution_stops(self):
+        # 実行途中で武装が切れたら、以降のキーを打たずに中断する（F1）。
+        import hid_core as hc
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        calls = {"n": 0}
+        orig = srv.is_armed
+
+        def fake_armed():
+            calls["n"] += 1
+            return calls["n"] <= 1  # 最初のチェックだけ武装、2回目で失効
+
+        srv.is_armed = fake_armed
+        try:
+            compiled = hc.compile_payload("abcd", "us")  # 4キー
+            errors = srv.execute_compiled(compiled)
+        finally:
+            srv.is_armed = orig
+        self.assertTrue(any("中断" in e for e in errors))
+        # 1キー目のpress/release + finallyのrelease = 3。以降は打たれない。
+        self.assertEqual(len(fake.writes), 3)
 
 
 if __name__ == "__main__":

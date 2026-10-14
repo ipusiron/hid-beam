@@ -404,6 +404,11 @@ def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
         rest = tokens[1] if len(tokens) > 1 else ""
 
         if command == "STRING":
+            # STRING の引数は空白も逐語に扱う。strip/split で先頭・末尾の空白を落とすと
+            # インデント等が黙って消えるため、元行から取り直す。行頭インデントのみ除き、
+            # コマンド語の直後の区切り空白を1つだけ落とす。
+            after = line.lstrip()[len("STRING"):]
+            rest = after[1:] if after[:1] in (" ", "\t") else after
             if len(rest) > limits.max_string_len:
                 errors.append(
                     f"行 {lineno}: STRINGが長すぎます: {len(rest)}文字 "
@@ -449,6 +454,7 @@ def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
             modifier = MODIFIER_NAMES[command]
             keycode = 0
             key_label = None
+            key_count = 0
             combo_ok = True
             for tok in rest.split():
                 tok_u = tok.upper()
@@ -457,12 +463,14 @@ def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
                 elif tok_u in SPECIAL_KEYS:
                     keycode = SPECIAL_KEYS[tok_u]
                     key_label = tok_u
+                    key_count += 1
                 elif len(tok) == 1:
                     kc, extra_mod = char_to_keycode(tok.lower(), layout)
                     if kc is not None:
                         keycode = kc
                         modifier |= extra_mod
                         key_label = tok.lower()
+                        key_count += 1
                     else:
                         errors.append(
                             f"行 {lineno}: 組合せ内の未知のキー: {tok!r}"
@@ -473,6 +481,12 @@ def compile_script(script, layout=DEFAULT_LAYOUT, limits=DEFAULT_LIMITS):
                         f"行 {lineno}: 組合せ内の未知のトークン: {tok!r}"
                     )
                     combo_ok = False
+            # HIDレポートはキー1枠。非修飾キーが2つ以上なら黙って捨てずにエラーにする。
+            if key_count > 1:
+                errors.append(
+                    f"行 {lineno}: 1つの組合せに非修飾キーは1つまでです: {stripped!r}"
+                )
+                combo_ok = False
             if not combo_ok:
                 continue
             label = _mod_label(modifier)
@@ -638,6 +652,12 @@ def build_file_inject(content, filename, wrap=76, encoding="base64", chunk_lines
         enc, decoder = raw.hex(), "xxd -r -p"
     else:
         raise DuckyCompileError([f"未知のエンコーディング: {encoding!r}（base64 か hex）"])
+
+    # 分割時の追記連結が成立するのは各ブロックがバイト境界に揃うときだけ。
+    # base64 は4、hex は2の倍数の wrap を要求する（既定76は両方を満たす）。
+    group = 4 if encoding == "base64" else 2
+    if wrap % group != 0:
+        raise DuckyCompileError([f"{encoding} の wrap は {group} の倍数が必要です: {wrap}"])
 
     # wrap は 4 と 2 の倍数（76）。各 wrap 行はエンコードのバイト境界に揃うため、
     # 行単位で分割したブロックを `>>` で追記しても復元結果は連結で一致する。
