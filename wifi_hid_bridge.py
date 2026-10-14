@@ -84,6 +84,8 @@ AUTH_LOCKOUT_SEC = int(_env("HIDBEAM_AUTH_LOCKOUT_SEC", "60"))
 MAX_CONTENT_BYTES = DEFAULT_LIMITS.max_input_bytes + 4096
 # プレビューで発行する確認ノンスの有効期間
 PREVIEW_TTL_SEC = 120
+# ファイル投入の分割送信で、1ブロックあたりのエンコード行数
+FILE_CHUNK_LINES = int(_env("HIDBEAM_FILE_CHUNK_LINES", "15"))
 
 
 # ---------- トークン（起動ごと） ----------
@@ -357,6 +359,7 @@ STRINGS = {
         "enc_label": "エンコード",
         "enc_base64": "base64（US向け）",
         "enc_hex": "hex（US/JIS両対応・xxd）",
+        "chunk_label": "分割送信（大きなファイル向け・対向機に進捗を表示）",
         "fp_head": "完全性フィンガープリント",
         "fp_sha": "SHA-256（先頭8桁）",
         "fp_words": "音節トークン",
@@ -412,6 +415,7 @@ STRINGS = {
         "enc_label": "Encoding",
         "enc_base64": "base64 (for US)",
         "enc_hex": "hex (US/JIS both, xxd)",
+        "chunk_label": "Chunked send (for large files; shows progress on the target)",
         "fp_head": "Integrity fingerprint",
         "fp_sha": "SHA-256 (first 8)",
         "fp_words": "Syllables",
@@ -518,6 +522,7 @@ PAGE = """<!doctype html>
       <label><input type="radio" name="encoding" value="base64" {% if encoding!='hex' %}checked{% endif %}>{{ t.enc_base64 }}</label>
       <label><input type="radio" name="encoding" value="hex" {% if encoding=='hex' %}checked{% endif %}>{{ t.enc_hex }}</label>
     </div>
+    <div class="layout"><label><input type="checkbox" name="chunked" value="1" {% if chunked %}checked{% endif %}>{{ t.chunk_label }}</label></div>
     {% endif %}
     <div class="layout">{{ t.layout }}:
       <label><input type="radio" name="layout" value="us" {% if layout=='us' %}checked{% endif %}>US</label>
@@ -610,7 +615,7 @@ def render(**kw):
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
         detail_rows=[], detail_omitted=0, mode="ducky",
-        filename="", encoding="base64", diag=False, diag_matrix=[],
+        filename="", encoding="base64", chunked=False, diag=False, diag_matrix=[],
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -700,12 +705,14 @@ def preview():
         mode = "ducky"
     filename = request.form.get("filename", "")
     encoding = "hex" if request.form.get("encoding") == "hex" else "base64"
+    chunked = request.form.get("chunked") == "1"
 
     try:
         if mode == "file":
             # 内容をbase64/hex投入スクリプトに変換し、それを逐語入力する。
             # 表示するフィンガープリントは「元ファイル」のもの（対向機でsha256sum照合）。
-            gen = build_file_inject(script, filename, encoding=encoding)
+            gen = build_file_inject(script, filename, encoding=encoding,
+                                    chunk_lines=FILE_CHUNK_LINES if chunked else 0)
             compiled = compile_payload(gen["script"], layout)
             compiled.fingerprint = gen["fingerprint"]
             store_script, store_mode = gen["script"], "payload"
@@ -715,14 +722,15 @@ def preview():
     except DuckyCompileError as e:
         audit("preview_reject", mode=mode, errors=len(e.errors))
         return render(prev=script, layout=layout, mode=mode, filename=filename,
-                      encoding=encoding, message="\n".join(e.errors), msg_class="err")
+                      encoding=encoding, chunked=chunked,
+                      message="\n".join(e.errors), msg_class="err")
 
     nonce = _issue_nonce(store_script, layout, store_mode)
     detail_rows, detail_omitted = compiled.detail_rows(100)
     audit("preview_ok", mode=mode, keys=compiled.key_event_count)
     return render(prev=script, layout=layout, mode=mode, filename=filename,
-                  encoding=encoding, plan=compiled.plan_summary(), nonce=nonce,
-                  detail_rows=detail_rows, detail_omitted=detail_omitted)
+                  encoding=encoding, chunked=chunked, plan=compiled.plan_summary(),
+                  nonce=nonce, detail_rows=detail_rows, detail_omitted=detail_omitted)
 
 
 @app.route("/layout-test", methods=["GET"])

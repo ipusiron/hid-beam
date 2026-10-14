@@ -388,6 +388,58 @@ class TestUKLayout(unittest.TestCase):
         self.assertEqual(predict_display('"', "us", "uk"), "@")
 
 
+def _decode_chunks(script, encoding="base64"):
+    """生成スクリプトの各ヒアドキュメントを個別に復号し連結する。
+
+    シェルの `decoder > file` → `decoder >> file`（チャンクごとに独立デコードして
+    追記）と同じ意味。これが元データに一致すれば、分割・追記が正しい。
+    """
+    import re as _re
+    out = b""
+    for m in _re.finditer(r"<<'(HIDBEAM_EOF[_0-9]*)'\n(.*?)\n\1\n", script, _re.S):
+        body = m.group(2).replace("\n", "")
+        out += _b64.b64decode(body) if encoding == "base64" else bytes.fromhex(body)
+    return out
+
+
+class TestFileInjectChunked(unittest.TestCase):
+    def test_default_is_single_block(self):
+        r = build_file_inject("abc", "f")
+        self.assertEqual(r["chunks"], 1)
+        self.assertIn("<<'HIDBEAM_EOF'", r["script"])
+
+    def test_chunked_roundtrips_base64(self):
+        content = "config line\n" * 50
+        r = build_file_inject(content, "f", chunk_lines=3)
+        self.assertGreater(r["chunks"], 1)
+        self.assertEqual(_decode_chunks(r["script"], "base64").decode(), content)
+
+    def test_chunked_roundtrips_hex(self):
+        content = "x=1\n" * 40
+        r = build_file_inject(content, "f", encoding="hex", chunk_lines=2)
+        self.assertEqual(_decode_chunks(r["script"], "hex").decode(), content)
+
+    def test_chunk_count(self):
+        content = "A" * 1000  # base64 → 1336 chars → 76字で18行
+        r = build_file_inject(content, "f", wrap=76, chunk_lines=5)
+        import math
+        self.assertEqual(r["chunks"], math.ceil(r["lines"] / 5))
+
+    def test_progress_echoes_present(self):
+        r = build_file_inject("A" * 500, "f", chunk_lines=2)
+        self.assertIn("hidbeam: chunk 1/", r["script"])
+        self.assertIn(f"hidbeam: chunk {r['chunks']}/{r['chunks']}", r["script"])
+
+    def test_non_final_blocks_byte_aligned_base64(self):
+        # 末尾以外のブロックは 4 の倍数長（＝バイト境界）で、独立デコードできる
+        r = build_file_inject("Z" * 600, "f", wrap=76, chunk_lines=2)
+        import re as _re
+        bodies = [m.group(2).replace("\n", "") for m in
+                  _re.finditer(r"<<'(HIDBEAM_EOF[_0-9]*)'\n(.*?)\n\1\n", r["script"], _re.S)]
+        for body in bodies[:-1]:
+            self.assertEqual(len(body) % 4, 0)
+
+
 class TestPredictDisplay(unittest.TestCase):
     def test_us_at_shows_as_doublequote_on_jis(self):
         # US で "@"(Shift+2) を打つと、実JISでは同じ Shift+2 位置の '"' に見える
