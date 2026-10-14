@@ -193,5 +193,36 @@ class TestLimits(unittest.TestCase):
         self.assertGreater(c.key_event_count, 0)
 
 
+class TestDetailRows(unittest.TestCase):
+    def test_key_rows_have_usage_id(self):
+        c = compile_script("STRING aA", "us")
+        rows, omitted = c.detail_rows()
+        self.assertEqual(omitted, 0)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["usage_id"], "0x04")   # a
+        self.assertEqual(rows[0]["modifier"], "-")
+        self.assertEqual(rows[1]["usage_id"], "0x04")   # A は同じキー＋Shift
+        self.assertEqual(rows[1]["modifier"], "SHIFT")
+
+    def test_delay_row(self):
+        c = compile_script("DELAY 200", "us")
+        rows, _ = c.detail_rows()
+        self.assertEqual(rows[0]["kind"], "delay")
+        self.assertIn("200", rows[0]["label"])
+        self.assertEqual(rows[0]["usage_id"], "-")
+
+    def test_combo_row(self):
+        c = compile_script("GUI r", "us")
+        rows, _ = c.detail_rows()
+        self.assertEqual(rows[0]["usage_id"], "0x15")
+        self.assertIn("GUI", rows[0]["modifier"])
+
+    def test_limit_and_omitted(self):
+        c = compile_script("STRING " + "a" * 10, "us")
+        rows, omitted = c.detail_rows(limit=4)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(omitted, 6)
+
+
 if __name__ == "__main__":
     unittest.main()

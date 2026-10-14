@@ -199,6 +199,32 @@ class CompiledScript:
             "uses_gui_modifier": self.uses_gui_modifier,
         }
 
+    def detail_rows(self, limit=100):
+        """各ステップの打鍵詳細（HID Usage ID・修飾キー）を返す。
+
+        プレビューで「DuckyScriptが実際にどのキーへ展開されるか」を可視化する。
+        教材用途であると同時に、送信前に運用者が内容を目視確認する安全機能でもある。
+        返り値: (rows, omitted) — rows は先頭 limit 件、omitted は省略件数。
+        """
+        rows = []
+        for st in self.steps:
+            if isinstance(st, KeyEvent):
+                rows.append({
+                    "kind": "key",
+                    "label": st.label,
+                    "usage_id": f"0x{st.keycode:02X}",
+                    "modifier": _mod_label(st.modifier) or "-",
+                })
+            else:  # DelayEvent
+                rows.append({
+                    "kind": "delay",
+                    "label": f"DELAY {st.ms}ms",
+                    "usage_id": "-",
+                    "modifier": "-",
+                })
+        omitted = max(0, len(rows) - limit)
+        return rows[:limit], omitted
+
 
 # ---------- 文字 → キーコード ----------
 

@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile wifi_hid_bridge.py hid_core.py hidbeam_arm.py
+        run: python -m py_compile wifi_hid_bridge.py hid_core.py hidbeam_arm.py hidbeam_gpio.py
       - name: Run tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
 

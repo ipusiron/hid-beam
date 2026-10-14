@@ -32,9 +32,10 @@ Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), thi
 ## 🔧 Features
 
 - **Ducky Script 1.0 subset interpreter**: `STRING` / `ENTER` / `TAB` / `DELAY` / `GUI`/`CTRL`/`ALT`/`SHIFT` modifier combos / `REM`.
-- **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
+- **Whole-script validation and preview before sending**: the entire script is parsed and validated first, then a keystroke plan (command count, key events, estimated duration, modifiers) is shown. It also lists each keystroke's HID Usage ID and modifier, so you can see exactly what will be typed before sending. Nothing is sent until you approve. Partial sends (typing halfway, then failing) cannot happen.
 - **Token authentication**: only someone who knows the per-boot token can operate it. Joining the AP is not enough to send.
 - **Disarmed by default**: sending is disabled by default. It is enabled only for a short window when you run `hidbeam_arm.py` on the Pi; it auto-disarms when the window expires.
+- **Physical arm/abort buttons (optional)**: with `hidbeam_gpio.py`, a GPIO button arms the device and another button aborts immediately (requires wiring).
 - **Privilege separation**: the bridge runs as a dedicated non-root user and writes only to `/dev/hidg0`, under a systemd sandbox.
 - **AP-interface-only binding**: it does not listen on all interfaces (0.0.0.0). Host/Origin checks and limits on request rate, input size and total duration are enforced.
 - **Browser UI (bilingual, responsive)**: a Flask web UI (port 8080) that toggles Japanese/English and works at phone width.
@@ -52,6 +53,7 @@ Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), thi
 | `wifi_hid_bridge.py` | Web UI and HID sending (Python + Flask): auth, arming, preview confirmation, limits, audit |
 | `hid_core.py` | Ducky Script parse/validation core (hardware-independent); validates the whole script before sending |
 | `hidbeam_arm.py` | Local command to arm for a short window (cannot arm over the network) |
+| `hidbeam_gpio.py` | Daemon that arms/aborts via GPIO buttons (optional, requires wiring) |
 | `hidbeam-preflight.sh` | Preflight check; blocks startup on a default/weak AP passphrase |
 | `setup-hid-gadget.sh` | configfs script that creates the USB HID keyboard gadget |
 | `99-hidbeam-hidg.rules` | udev rule letting the dedicated group `hidbeam` write to `/dev/hidg0` |
@@ -61,7 +63,8 @@ Compared with existing Wi-Fi HID tools (Key Mime Pi, P4wnP1 A.L.O.A., etc.), thi
 | `dnsmasq-ap.conf` | DHCP config for AP clients (no gateway/DNS handed out) |
 | `dhcpcd-ap.conf` | static IP for wlan0 (192.168.100.1/24) |
 | `requirements.txt` | Python dependency (Flask) |
-| `tests/` | unit tests for `hid_core`, `hidbeam_arm` and the web gates |
+| `tests/` | unit tests for `hid_core`, `hidbeam_arm`, `hidbeam_gpio` and the web gates |
+| `CHECKLIST.md` | on-device (Pi Zero W) verification checklist |
 
 ---
 
@@ -140,7 +143,7 @@ Using it against other people's devices without authorization may violate laws s
 - **AP-only binding by default**: it listens only on `192.168.100.1` by default. To run on an existing network instead of the AP, set `HIDBEAM_LISTEN_HOST` and `HIDBEAM_ALLOWED_HOSTS` for your environment (otherwise the bind IP and allowed host won't match and it won't be reachable).
 - **systemd sandbox needs on-device tuning**: `SystemCallFilter`, `MemoryDenyWriteExecute`, `DeviceAllow` etc. are deliberately strict defaults. If it fails to start on real hardware, relax them one at a time while watching the journal to find the minimal set.
 - **Development server**: it runs on Flask's development server. It targets single-operator, low-load LAN use; do not expose it to a public network.
-- **Not verified on hardware**: connection, privileges, stop, restart and error paths on a real Raspberry Pi Zero W are unverified. Do not call it "safe" until they are.
+- **Not verified on hardware**: connection, privileges, stop, restart and error paths on a real Raspberry Pi Zero W are unverified. Do not call it "safe" until they are. Use the steps in `CHECKLIST.md` for on-device verification.
 
 ---
 

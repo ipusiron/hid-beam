@@ -328,6 +328,11 @@ STRINGS = {
         "plan_combos": "修飾キー組合せ",
         "plan_specials": "特殊キー",
         "plan_gui_warn": "GUI（Windows/Command）修飾キーを含みます。ランチャー起動などに注意してください。",
+        "detail_head": "打鍵の内訳（HID Usage ID）",
+        "col_step": "操作",
+        "col_usage": "Usage ID",
+        "col_mod": "修飾キー",
+        "detail_more": "ほか {n} 件（表示は先頭のみ）",
         "need_arm_to_send": "送信するには、先にPi上で武装してください。",
         "sent_ok": "送信完了（レイアウト: {layout}、打鍵 {keys} 件）",
         "preview_expired": "プレビューの有効期限が切れました。もう一度プレビューしてください。",
@@ -360,6 +365,11 @@ STRINGS = {
         "plan_combos": "Modifier combos",
         "plan_specials": "Special keys",
         "plan_gui_warn": "Contains a GUI (Windows/Command) modifier. Watch for launcher actions.",
+        "detail_head": "Keystroke breakdown (HID Usage ID)",
+        "col_step": "Action",
+        "col_usage": "Usage ID",
+        "col_mod": "Modifier",
+        "detail_more": "+{n} more (showing the first rows only)",
         "need_arm_to_send": "Arm the device on the Pi before sending.",
         "sent_ok": "Sent (layout: {layout}, {keys} key events)",
         "preview_expired": "Preview expired. Please preview again.",
@@ -414,6 +424,9 @@ PAGE = """<!doctype html>
   table { border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 8px; }
   td { border-bottom: 1px solid var(--line); padding: 6px 4px; }
   td:first-child { color: var(--muted); width: 45%; }
+  th { text-align: left; border-bottom: 1px solid var(--line); padding: 6px 4px; color: var(--muted); font-weight: normal; }
+  table.detail td:first-child { width: 3em; color: var(--muted); }
+  details { margin-top: 8px; } summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   form.inline { display: inline; }
   @media (max-width: 480px) { body { padding: 12px; } h1 { font-size: 16px; } }
 </style>
@@ -464,6 +477,18 @@ PAGE = """<!doctype html>
       {% if plan.specials %}<tr><td>{{ t.plan_specials }}</td><td>{{ plan.specials|join(', ') }}</td></tr>{% endif %}
     </table>
     </div>
+    {% if detail_rows %}
+    <details open>
+      <summary>{{ t.detail_head }}</summary>
+      <table class="detail">
+        <tr><th>#</th><th>{{ t.col_step }}</th><th>{{ t.col_usage }}</th><th>{{ t.col_mod }}</th></tr>
+        {% for r in detail_rows %}
+        <tr><td>{{ loop.index }}</td><td>{{ r.label }}</td><td>{{ r.usage_id }}</td><td>{{ r.modifier }}</td></tr>
+        {% endfor %}
+      </table>
+      {% if detail_omitted %}<p class="hint">{{ t.detail_more.format(n=detail_omitted) }}</p>{% endif %}
+    </details>
+    {% endif %}
     {% if plan.uses_gui_modifier %}<div class="msg warn">{{ t.plan_gui_warn }}</div>{% endif %}
     {% if armed %}
       <form method="POST" action="{{ url_for('execute') }}">
@@ -504,6 +529,7 @@ def render(**kw):
         lang=_lang(), t=t, authed=session.get("authed", False),
         armed=is_armed(), armed_ts="", hw=_hid_available,
         layout=hid_core.DEFAULT_LAYOUT, prev="", plan=None, nonce="",
+        detail_rows=[], detail_omitted=0,
         message=None, msg_class="ok",
     )
     au = armed_until()
@@ -595,10 +621,11 @@ def preview():
         return render(prev=script, layout=layout,
                       message="\n".join(e.errors), msg_class="err")
     nonce = _issue_nonce(script, layout)
+    detail_rows, detail_omitted = compiled.detail_rows(100)
     audit("preview_ok", commands=compiled.command_count,
           keys=compiled.key_event_count)
     return render(prev=script, layout=layout, plan=compiled.plan_summary(),
-                  nonce=nonce)
+                  nonce=nonce, detail_rows=detail_rows, detail_omitted=detail_omitted)
 
 
 @app.route("/execute", methods=["POST"])
