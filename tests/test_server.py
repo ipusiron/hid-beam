@@ -337,6 +337,21 @@ class TestFileInjectMode(ServerTestBase):
         self.assertIn("送信完了", r.get_data(as_text=True))
         self.assertGreater(len(fake.writes), 10)  # 生成スクリプトはそれなりに長い
 
+    def test_file_hex_mode_typeable_in_jis(self):
+        # hex は 0-9a-f のみ。JIS 選択でもプレビューが通り、ノンスが発行される
+        self._login()
+        self._arm()
+        fake = FakeHID()
+        srv._hid_available = True
+        srv._hid_file = fake
+        pv = self.client.post("/preview", data={
+            "script": "hi", "layout": "jis", "mode": "file",
+            "filename": "f.bin", "encoding": "hex"})
+        nonce = _nonce_from(pv.get_data(as_text=True))
+        self.assertIsNotNone(nonce)
+        r = self.client.post("/execute", data={"nonce": nonce})
+        self.assertIn("送信完了", r.get_data(as_text=True))
+
 
 class TestLayoutTest(ServerTestBase):
     def test_layout_test_renders_diag(self):
@@ -352,6 +367,13 @@ class TestLayoutTest(ServerTestBase):
     def test_layout_test_requires_auth(self):
         r = self.client.get("/layout-test?layout=us")
         self.assertEqual(r.status_code, 403)
+
+    def test_layout_test_shows_mismatch_prediction(self):
+        self._login()
+        r = self.client.get("/layout-test?layout=us")
+        html = r.get_data(as_text=True)
+        self.assertIn("実は jis", html)   # 不一致予測の対象レイアウト
+        self.assertIn("配列なら", html)
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ import base64 as _b64
 
 from hid_core import (
     compile_script, compile_payload, syllable_fingerprint, build_file_inject,
-    LAYOUT_DIAG_TEXT, DuckyCompileError, Limits, KeyEvent, DelayEvent,
-    char_to_keycode, CHAR_DELAY_MS, _FP_WORDS,
+    predict_display, LAYOUT_DIAG_TEXT, DuckyCompileError, Limits, KeyEvent,
+    DelayEvent, char_to_keycode, CHAR_DELAY_MS, _FP_WORDS,
 )
 
 
@@ -304,14 +304,14 @@ class TestFileInject(unittest.TestCase):
     def test_base64_roundtrips(self):
         content = "key=VALUE\nhost=10.0.0.1\n"
         r = build_file_inject(content, "conf")
-        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        body = r["script"].split("<<'HIDBEAM_EOF'\n", 1)[1].split("\nHIDBEAM_EOF", 1)[0]
         decoded = _b64.b64decode(body.replace("\n", "")).decode()
         self.assertEqual(decoded, content)
 
     def test_crlf_normalized(self):
         r = build_file_inject("a\r\nb", "f")
         self.assertEqual(r["fingerprint"], syllable_fingerprint("a\nb"))
-        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        body = r["script"].split("<<'HIDBEAM_EOF'\n", 1)[1].split("\nHIDBEAM_EOF", 1)[0]
         self.assertEqual(_b64.b64decode(body.replace("\n", "")), b"a\nb")
 
     def test_bad_filename_rejected(self):
@@ -325,7 +325,7 @@ class TestFileInject(unittest.TestCase):
 
     def test_wrapping(self):
         r = build_file_inject("A" * 300, "f", wrap=76)
-        body = r["script"].split("<<'HIDBEAM_B64_EOF'\n", 1)[1].split("\nHIDBEAM_B64_EOF", 1)[0]
+        body = r["script"].split("<<'HIDBEAM_EOF'\n", 1)[1].split("\nHIDBEAM_EOF", 1)[0]
         for line in body.split("\n"):
             self.assertLessEqual(len(line), 76)
 
@@ -335,6 +335,48 @@ class TestLayoutDiag(unittest.TestCase):
         for lay in ("us", "jis"):
             c = compile_payload(LAYOUT_DIAG_TEXT, lay)
             self.assertEqual(c.key_event_count, len(LAYOUT_DIAG_TEXT))
+
+
+class TestFileInjectHex(unittest.TestCase):
+    def test_hex_encoding(self):
+        r = build_file_inject("hi", "f.bin", encoding="hex")
+        self.assertIn("xxd -r -p > 'f.bin'", r["script"])
+        self.assertIn(b"hi".hex(), r["script"])  # "6869"
+        self.assertEqual(r["encoding"], "hex")
+
+    def test_hex_roundtrips(self):
+        content = "data=1\n"
+        r = build_file_inject(content, "f", encoding="hex")
+        body = r["script"].split("<<'HIDBEAM_EOF'\n", 1)[1].split("\nHIDBEAM_EOF", 1)[0]
+        self.assertEqual(bytes.fromhex(body.replace("\n", "")).decode(), content)
+
+    def test_hex_only_typeable_chars(self):
+        # hex は 0-9a-f のみ。生成スクリプト全体が US でも JIS でも打てる
+        r = build_file_inject("hello world", "f", encoding="hex")
+        for lay in ("us", "jis"):
+            compile_payload(r["script"], lay)  # 未対応文字があれば raise
+
+    def test_unknown_encoding_rejected(self):
+        with self.assertRaises(DuckyCompileError):
+            build_file_inject("x", "f", encoding="rot13")
+
+
+class TestPredictDisplay(unittest.TestCase):
+    def test_us_at_shows_as_doublequote_on_jis(self):
+        # US で "@"(Shift+2) を打つと、実JISでは同じ Shift+2 位置の '"' に見える
+        self.assertEqual(predict_display("@", "us", "jis"), '"')
+
+    def test_letters_layout_independent(self):
+        self.assertEqual(predict_display("Hello", "us", "jis"), "Hello")
+
+    def test_same_layout_identity(self):
+        self.assertEqual(predict_display(LAYOUT_DIAG_TEXT, "us", "us"), LAYOUT_DIAG_TEXT)
+
+    def test_diag_differs_across_layouts(self):
+        self.assertNotEqual(predict_display(LAYOUT_DIAG_TEXT, "us", "jis"), LAYOUT_DIAG_TEXT)
+
+    def test_space_preserved(self):
+        self.assertEqual(predict_display("a b", "us", "jis"), "a b")
 
 
 if __name__ == "__main__":
