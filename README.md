@@ -33,6 +33,7 @@ tags:
   - defensive-security
 
 repo_url: "https://github.com/ipusiron/hid-beam"
+demo_url: ""
 
 hub: true
 ---
