@@ -164,3 +164,9 @@ MIT License. See `LICENSE`.
 
 - Book sample repository: https://github.com/ipusiron/sample_AirGapInput
 - Sister book (output edition) sample: https://github.com/ipusiron/sample_AirGapOutput
+
+---
+
+## 🛠️ About this tool
+
+This project is part of [Security Tools with Generative AI 200](https://akademeia.info/?page_id=44607).
